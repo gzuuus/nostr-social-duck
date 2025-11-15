@@ -2,12 +2,12 @@
  * Parser for Nostr Kind 3 (follow list) events
  */
 
-import { isHex, isHexKey } from "applesauce-core/helpers";
 import type {
   NostrEvent,
   FollowRelationship,
   ParsedKind3Event,
 } from "./types.js";
+import { isHex, isHexKey } from "./utils.js";
 
 /**
  * Validates that an event is a Kind 3 (follow list) event

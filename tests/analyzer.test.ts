@@ -119,3 +119,145 @@ describe("DuckDBSocialGraphAnalyzer", () => {
     });
   });
 });
+
+describe("persistent database", () => {
+  const tmpDir = "./tmp";
+  const testDbPath = `${tmpDir}/test-persistent.db`;
+
+  beforeEach(async () => {
+    // Create tmp directory if it doesn't exist
+    await Bun.$`mkdir -p ${tmpDir}`;
+  });
+
+  afterEach(async () => {
+    // Clean up entire tmp directory after each test
+    try {
+      await Bun.$`rm -rf ${tmpDir}`;
+    } catch (error) {
+      // Ignore errors if directory doesn't exist
+    }
+  });
+
+  it("should create and use persistent database", async () => {
+    // Create analyzer with persistent database
+    const persistentAnalyzer = await DuckDBSocialGraphAnalyzer.create({
+      dbPath: testDbPath,
+      maxDepth: 6,
+    });
+
+    try {
+      // Verify the analyzer was created successfully
+      expect(persistentAnalyzer).toBeInstanceOf(DuckDBSocialGraphAnalyzer);
+      expect(persistentAnalyzer.getMaxDepth()).toBe(6);
+      expect(persistentAnalyzer.isClosed()).toBe(false);
+
+      // Ingest some test data
+      const events = createSimpleFollowChain();
+      await persistentAnalyzer.ingestEvents(events);
+
+      // Verify data was ingested
+      const stats = await persistentAnalyzer.getStats();
+      expect(stats.totalFollows).toBe(2);
+      expect(stats.uniqueFollowers).toBe(2);
+      expect(stats.uniqueEvents).toBe(2);
+
+      // Test path finding
+      const path = await persistentAnalyzer.getShortestPath(
+        TEST_PUBKEYS.adam,
+        TEST_PUBKEYS.snowden,
+      );
+      expect(path).not.toBeNull();
+      expect(path?.distance).toBe(2);
+      expect(path?.path).toHaveLength(3);
+      expect(path?.path[0]).toBe(TEST_PUBKEYS.adam);
+      expect(path?.path[1]).toBe(TEST_PUBKEYS.fiatjaf);
+      expect(path?.path[2]).toBe(TEST_PUBKEYS.snowden);
+
+      // Close the analyzer
+      await persistentAnalyzer.close();
+      expect(persistentAnalyzer.isClosed()).toBe(true);
+
+      // Verify database file exists
+      const fileExists = await Bun.file(testDbPath).exists();
+      expect(fileExists).toBe(true);
+
+      // Re-open the database and verify data persists
+      const reopenedAnalyzer = await DuckDBSocialGraphAnalyzer.create({
+        dbPath: testDbPath,
+        maxDepth: 6,
+      });
+
+      try {
+        // Verify the data is still there
+        const reopenedStats = await reopenedAnalyzer.getStats();
+        expect(reopenedStats.totalFollows).toBe(2);
+        expect(reopenedStats.uniqueFollowers).toBe(2);
+        expect(reopenedStats.uniqueEvents).toBe(2);
+
+        // Verify path finding still works
+        const reopenedPath = await reopenedAnalyzer.getShortestPath(
+          TEST_PUBKEYS.adam,
+          TEST_PUBKEYS.snowden,
+        );
+        expect(reopenedPath).not.toBeNull();
+        expect(reopenedPath?.distance).toBe(2);
+      } finally {
+        await reopenedAnalyzer.close();
+      }
+    } finally {
+      if (!persistentAnalyzer.isClosed()) {
+        await persistentAnalyzer.close();
+      }
+    }
+  });
+
+  it("should handle multiple connections to same persistent database", async () => {
+    // Create first analyzer
+    const analyzer1 = await DuckDBSocialGraphAnalyzer.create({
+      dbPath: testDbPath,
+      maxDepth: 6,
+    });
+
+    try {
+      // Ingest data with first analyzer
+      const events = createSimpleFollowChain();
+      await analyzer1.ingestEvents(events);
+
+      // Create second analyzer pointing to same database
+      const analyzer2 = await DuckDBSocialGraphAnalyzer.create({
+        dbPath: testDbPath,
+        maxDepth: 6,
+      });
+
+      try {
+        // Both analyzers should see the same data
+        const stats1 = await analyzer1.getStats();
+        const stats2 = await analyzer2.getStats();
+
+        expect(stats1.totalFollows).toBe(2);
+        expect(stats2.totalFollows).toBe(2);
+        expect(stats1.uniqueFollowers).toBe(2);
+        expect(stats2.uniqueFollowers).toBe(2);
+
+        // Both should be able to find the same path
+        const path1 = await analyzer1.getShortestPath(
+          TEST_PUBKEYS.adam,
+          TEST_PUBKEYS.snowden,
+        );
+        const path2 = await analyzer2.getShortestPath(
+          TEST_PUBKEYS.adam,
+          TEST_PUBKEYS.snowden,
+        );
+
+        expect(path1).not.toBeNull();
+        expect(path2).not.toBeNull();
+        expect(path1?.distance).toBe(2);
+        expect(path2?.distance).toBe(2);
+      } finally {
+        await analyzer2.close();
+      }
+    } finally {
+      await analyzer1.close();
+    }
+  });
+});

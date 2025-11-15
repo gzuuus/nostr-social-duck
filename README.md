@@ -60,6 +60,19 @@ const analyzer = await DuckDBSocialGraphAnalyzer.create({
 });
 ```
 
+### Using Existing DuckDB Connections
+
+```typescript
+// Connect to existing DuckDB instance
+const connection = await myInstance.connect();
+const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 6);
+
+// Use with custom maxDepth
+const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 10);
+```
+
+**Note:** When using `connect()`, the analyzer won't close the connection when you call `close()`, allowing you to reuse the connection for other purposes.
+
 ### Ingesting Events
 
 ```typescript
@@ -95,34 +108,12 @@ const stats = await analyzer.getStats();
 // }
 ```
 
-### Advanced Usage
-
-```typescript
-import {
-  isDirectFollow,
-  areMutualFollows,
-  getPubkeyDegree,
-  getFollowing,
-  getFollowers,
-} from "nostr-social-duck";
-
-// Check direct follow
-const isDirect = await isDirectFollow(connection, follower, followed);
-
-// Check mutual follows
-const areMutual = await areMutualFollows(connection, pubkey1, pubkey2);
-
-// Get degree (in/out connections)
-const degree = await getPubkeyDegree(connection, pubkey);
-console.log(`Following: ${degree.outDegree}, Followers: ${degree.inDegree}`);
-```
-
 ## Data Model
 
 The library uses a simple, efficient schema:
 
 ```sql
-CREATE TABLE follows (
+CREATE TABLE nsd_follows (
     follower_pubkey VARCHAR(64) NOT NULL,
     followed_pubkey VARCHAR(64) NOT NULL,
     event_id VARCHAR(64) NOT NULL,
@@ -133,9 +124,9 @@ CREATE TABLE follows (
 
 With strategic indexes for optimal graph traversal:
 
-- `idx_follows_follower` - For outgoing edges
-- `idx_follows_followed` - For incoming edges
-- `idx_follows_compound` - For efficient lookups
+- `idx_nsd_follows_follower` - For outgoing edges
+- `idx_nsd_follows_followed` - For incoming edges
+- `idx_nsd_follows_compound` - For efficient lookups
 
 ## Architecture
 
@@ -167,6 +158,22 @@ With strategic indexes for optimal graph traversal:
 - Bun.js or Node.js 18+
 - TypeScript 5+
 - DuckDB Node API 1.4+
+
+## Platform Compatibility
+
+### ⚠️ Important Limitations
+
+**This library is NOT intended for browser use** and currently only works on **Linux environments**.
+
+#### Future Platform Support
+
+We plan to add support (if requested) for:
+
+- macOS (Darwin) environments
+- Windows environments
+- WebAssembly builds for browser compatibility
+
+For now, please use this library in Node.js/Bun.js environments on Linux systems.
 
 ## License
 
