@@ -1,7 +1,7 @@
 {
   "name": "nostr-social-duck",
   "description": "Nostr Social Graph Analysis library using DuckDB for efficient graph operations",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "Gzuuus",
   "repository": {
     "type": "git",
@@ -9,7 +9,7 @@
   },
   "main": "dist/index.js",
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target node --external \"@duckdb/node-bindings-linux-arm64\" --external \"@duckdb/node-bindings-darwin-arm64\" --external \"@duckdb/node-bindings-darwin-x64\" --external \"@duckdb/node-bindings-win32-x64\"",
+    "build": "bun build ./src/index.ts --outdir ./dist --target node --external \"@duckdb/node-bindings-linux-x64/duckdb.node\" --external \"@duckdb/node-bindings-linux-arm64/duckdb.node\" --external \"@duckdb/node-bindings-darwin-arm64/duckdb.node\" --external \"@duckdb/node-bindings-darwin-x64/duckdb.node\" --external \"@duckdb/node-bindings-win32-x64/duckdb.node\"",
     "dev": "bun --watch ./src/index.ts",
     "lint": "eslint src/",
     "format": "prettier --write .",
@@ -27,6 +27,11 @@
   "type": "module",
   "types": "dist/index.d.ts",
   "module": "index.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
     "@types/bun": "latest",

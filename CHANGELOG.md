@@ -1,5 +1,13 @@
 # nostr-social-duck
 
+## 0.1.3
+
+### Patch Changes
+
+- fix: correct DuckDB native binding external dependencies in build script
+
+  Update build script to include `/duckdb.node` suffix for all DuckDB native binding external dependencies, fixing ERR_DLOPEN_FAILED errors when using the library in other projects.
+
 ## 0.1.2
 
 ### Patch Changes
