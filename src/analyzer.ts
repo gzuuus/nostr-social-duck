@@ -1,0 +1,253 @@
+/**
+ * Main SocialGraphAnalyzer class - the primary API for the library
+ */
+
+import { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
+import type {
+  NostrEvent,
+  SocialPath,
+  SocialGraphConfig,
+  GraphStats,
+  SocialGraphAnalyzer as ISocialGraphAnalyzer,
+} from "./types.js";
+import { initializeDatabase, setupSchema, getTableStats } from "./database.js";
+import {
+  ingestEvent as ingestSingleEvent,
+  ingestEvents as ingestMultipleEvents,
+} from "./ingestion.js";
+import { findShortestPath } from "./graph-analysis.js";
+
+/**
+ * DuckDB-based Social Graph Analyzer for Nostr Kind 3 events
+ *
+ * This class provides the main API for analyzing social graphs from Nostr follow lists.
+ * It uses DuckDB for efficient graph traversal and analysis.
+ *
+ * @example
+ * ```typescript
+ * // Create an in-memory analyzer
+ * const analyzer = await DuckDBSocialGraphAnalyzer.create();
+ *
+ * // Ingest events
+ * await analyzer.ingestEvents(kind3Events);
+ *
+ * // Find shortest path
+ * const path = await analyzer.getShortestPath(fromPubkey, toPubkey);
+ *
+ * // Clean up
+ * await analyzer.close();
+ * ```
+ */
+export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
+  private instance: DuckDBInstance;
+  private connection: DuckDBConnection | null = null;
+  private maxDepth: number;
+  private closed: boolean = false;
+
+  /**
+   * Private constructor - use static create() method instead
+   */
+  private constructor(instance: DuckDBInstance, maxDepth: number) {
+    this.instance = instance;
+    this.maxDepth = maxDepth;
+  }
+
+  /**
+   * Creates a new SocialGraphAnalyzer instance
+   *
+   * @param config - Configuration options
+   * @returns Promise resolving to a new analyzer instance
+   *
+   * @example
+   * ```typescript
+   * // In-memory database
+   * const analyzer = await DuckDBSocialGraphAnalyzer.create();
+   *
+   * // Persistent database
+   * const analyzer = await DuckDBSocialGraphAnalyzer.create({
+   *   dbPath: './social-graph.db'
+   * });
+   * ```
+   */
+  static async create(
+    config: SocialGraphConfig = {},
+  ): Promise<DuckDBSocialGraphAnalyzer> {
+    const { dbPath = ":memory:", maxDepth = 6 } = config;
+
+    // Initialize database
+    const instance = await initializeDatabase(dbPath);
+
+    // Create analyzer instance
+    const analyzer = new DuckDBSocialGraphAnalyzer(instance, maxDepth);
+
+    // Get connection and setup schema
+    await analyzer.ensureConnection();
+    await setupSchema(analyzer.connection!);
+
+    return analyzer;
+  }
+
+  /**
+   * Ensures a database connection is available
+   * @private
+   */
+  private async ensureConnection(): Promise<void> {
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+
+    if (!this.connection) {
+      this.connection = await this.instance.connect();
+    }
+  }
+
+  /**
+   * Ingests a single Kind 3 Nostr event into the graph
+   *
+   * @param event - The Nostr Kind 3 event to ingest
+   * @throws Error if the event is invalid or the analyzer is closed
+   *
+   * @example
+   * ```typescript
+   * await analyzer.ingestEvent({
+   *   id: "event123...",
+   *   pubkey: "pubkey123...",
+   *   kind: 3,
+   *   created_at: 1234567890,
+   *   tags: [
+   *     ["p", "followed_pubkey1..."],
+   *     ["p", "followed_pubkey2..."]
+   *   ],
+   *   content: "",
+   *   sig: "signature..."
+   * });
+   * ```
+   */
+  async ingestEvent(event: NostrEvent): Promise<void> {
+    await this.ensureConnection();
+    await ingestSingleEvent(this.connection!, event);
+  }
+
+  /**
+   * Ingests multiple Kind 3 Nostr events into the graph
+   *
+   * Events are deduplicated by pubkey, keeping only the latest event
+   * for each pubkey based on the created_at timestamp.
+   *
+   * @param events - Array of Nostr Kind 3 events to ingest
+   * @throws Error if any event is invalid or the analyzer is closed
+   *
+   * @example
+   * ```typescript
+   * await analyzer.ingestEvents([event1, event2, event3]);
+   * ```
+   */
+  async ingestEvents(events: NostrEvent[]): Promise<void> {
+    await this.ensureConnection();
+    await ingestMultipleEvents(this.connection!, events);
+  }
+
+  /**
+   * Finds the shortest path between two pubkeys in the social graph
+   *
+   * Uses DuckDB's recursive CTE with USING KEY for efficient traversal.
+   * Returns null if no path exists within the maximum depth.
+   *
+   * @param fromPubkey - Starting pubkey (64-character hex string)
+   * @param toPubkey - Target pubkey (64-character hex string)
+   * @param maxDepth - Maximum search depth (defaults to analyzer's maxDepth)
+   * @returns Promise resolving to the shortest path, or null if no path exists
+   *
+   * @example
+   * ```typescript
+   * const path = await analyzer.getShortestPath(
+   *   "abc123...",
+   *   "def456..."
+   * );
+   *
+   * if (path) {
+   *   console.log(`Distance: ${path.distance}`);
+   *   console.log(`Path: ${path.path.join(' -> ')}`);
+   * }
+   * ```
+   */
+  async getShortestPath(
+    fromPubkey: string,
+    toPubkey: string,
+    maxDepth?: number,
+  ): Promise<SocialPath | null> {
+    await this.ensureConnection();
+    const depth = maxDepth ?? this.maxDepth;
+    return findShortestPath(this.connection!, fromPubkey, toPubkey, depth);
+  }
+
+  /**
+   * Gets statistics about the current social graph
+   *
+   * @returns Promise resolving to graph statistics
+   *
+   * @example
+   * ```typescript
+   * const stats = await analyzer.getStats();
+   * console.log(`Total follows: ${stats.totalFollows}`);
+   * console.log(`Unique users: ${stats.uniqueFollowers}`);
+   * ```
+   */
+  async getStats(): Promise<GraphStats> {
+    await this.ensureConnection();
+    return getTableStats(this.connection!);
+  }
+
+  /**
+   * Closes the database connection and cleans up resources
+   *
+   * After calling this method, the analyzer cannot be used anymore.
+   *
+   * @example
+   * ```typescript
+   * await analyzer.close();
+   * ```
+   */
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
+    if (this.connection) {
+      this.connection.closeSync();
+      this.connection = null;
+    }
+
+    this.closed = true;
+  }
+
+  /**
+   * Checks if the analyzer has been closed
+   *
+   * @returns true if the analyzer is closed
+   */
+  isClosed(): boolean {
+    return this.closed;
+  }
+
+  /**
+   * Gets the configured maximum depth for path searches
+   *
+   * @returns The maximum depth value
+   */
+  getMaxDepth(): number {
+    return this.maxDepth;
+  }
+
+  /**
+   * Sets a new maximum depth for path searches
+   *
+   * @param maxDepth - The new maximum depth (must be positive)
+   */
+  setMaxDepth(maxDepth: number): void {
+    if (maxDepth < 1) {
+      throw new Error("maxDepth must be at least 1");
+    }
+    this.maxDepth = maxDepth;
+  }
+}
