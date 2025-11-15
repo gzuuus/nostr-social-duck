@@ -56,7 +56,7 @@ const analyzer = await DuckDBSocialGraphAnalyzer.create();
 // Persistent database
 const analyzer = await DuckDBSocialGraphAnalyzer.create({
   dbPath: "./social-graph.db",
-  maxDepth: 6, // Maximum search depth for paths
+  maxDepth: 6, // Maximum search depth for paths (Optional, default: 6)
 });
 ```
 
@@ -93,7 +93,7 @@ const path = await analyzer.getShortestPath(
   maxDepth, // optional, defaults to analyzer's maxDepth
 );
 
-// Returns: { path: string[], distance: number, pubkeys: string[] } | null
+// Returns: { path: string[], distance: number } | null
 ```
 
 ### Graph Statistics
