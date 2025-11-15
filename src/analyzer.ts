@@ -15,7 +15,7 @@ import {
   ingestEvent as ingestSingleEvent,
   ingestEvents as ingestMultipleEvents,
 } from "./ingestion.js";
-import { findShortestPath } from "./graph-analysis.js";
+import { findShortestPath, getUsersWithinDistance } from "./graph-analysis.js";
 
 /**
  * DuckDB-based Social Graph Analyzer for Nostr Kind 3 events
@@ -222,6 +222,34 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     await this.ensureConnection();
     const depth = maxDepth ?? this.maxDepth;
     return findShortestPath(this.connection!, fromPubkey, toPubkey, depth);
+  }
+
+  /**
+   * Gets all pubkeys reachable from a starting pubkey within a specified distance
+   *
+   * Uses DuckDB's recursive CTE with USING KEY to efficiently traverse the graph
+   * and collect all unique pubkeys within the distance limit.
+   *
+   * @param fromPubkey - Starting pubkey (64-character hex string)
+   * @param distance - Maximum distance (number of hops) to search
+   * @returns Promise resolving to array of pubkeys (excluding the starting pubkey)
+   *
+   * @example
+   * ```typescript
+   * // Get all users within 2 hops from a pubkey
+   * const nearbyUsers = await analyzer.getUsersWithinDistance(
+   *   "abc123...",
+   *   2
+   * );
+   * // Returns: ["def456...", "ghi789...", ...]
+   * ```
+   */
+  async getUsersWithinDistance(
+    fromPubkey: string,
+    distance: number,
+  ): Promise<string[]> {
+    await this.ensureConnection();
+    return getUsersWithinDistance(this.connection!, fromPubkey, distance);
   }
 
   /**

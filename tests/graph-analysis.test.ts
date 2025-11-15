@@ -9,6 +9,7 @@ import {
   isDirectFollow,
   areMutualFollows,
   getPubkeyDegree,
+  getUsersWithinDistance,
 } from "../src/graph-analysis.js";
 import { initializeDatabase, setupSchema } from "../src/database.js";
 import { ingestEvents } from "../src/ingestion.js";
@@ -373,6 +374,145 @@ describe("Graph Analysis", () => {
         outDegree: 1,
         inDegree: 0,
       });
+    });
+  });
+
+  describe("getUsersWithinDistance", () => {
+    it("should return empty array for distance 0", async () => {
+      const events = createSimpleFollowChain();
+      await ingestEvents(connection, events);
+
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam,
+        0,
+      );
+
+      expect(users).toEqual([]);
+    });
+
+    it("should return empty array for non-existent pubkey", async () => {
+      const events = createSimpleFollowChain();
+      await ingestEvents(connection, events);
+
+      const nonExistentPubkey = "a".repeat(64);
+      const users = await getUsersWithinDistance(
+        connection,
+        nonExistentPubkey,
+        2,
+      );
+
+      expect(users).toEqual([]);
+    });
+
+    it("should return direct follows for distance 1", async () => {
+      const events = createSimpleFollowChain();
+      await ingestEvents(connection, events);
+
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam,
+        1,
+      );
+
+      expect(users).toEqual([TEST_PUBKEYS.fiatjaf.toLowerCase()]);
+    });
+
+    it("should return all reachable users for distance 2", async () => {
+      const events = createSimpleFollowChain();
+      await ingestEvents(connection, events);
+
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam,
+        2,
+      );
+
+      expect(users).toHaveLength(2);
+      expect(users).toContain(TEST_PUBKEYS.fiatjaf.toLowerCase());
+      expect(users).toContain(TEST_PUBKEYS.snowden.toLowerCase());
+    });
+
+    it("should exclude starting pubkey from results", async () => {
+      const events = createComplexGraph();
+      await ingestEvents(connection, events);
+
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam,
+        3,
+      );
+
+      expect(users).not.toContain(TEST_PUBKEYS.adam.toLowerCase());
+    });
+
+    it("should handle cycles without duplicates", async () => {
+      const events = createComplexGraph();
+      await ingestEvents(connection, events);
+
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam,
+        3,
+      );
+
+      // Should contain all unique pubkeys from the complex graph (excluding adam)
+      const expectedPubkeys = [
+        TEST_PUBKEYS.fiatjaf,
+        TEST_PUBKEYS.snowden,
+        TEST_PUBKEYS.sirius,
+      ].map((p) => p.toLowerCase());
+
+      expect(users).toHaveLength(expectedPubkeys.length);
+      for (const pubkey of expectedPubkeys) {
+        expect(users).toContain(pubkey);
+      }
+    });
+
+    it("should respect distance parameter", async () => {
+      const events = createSimpleFollowChain();
+      await ingestEvents(connection, events);
+
+      // With distance 1, should not include 2-hop users
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam,
+        1,
+      );
+
+      expect(users).toEqual([TEST_PUBKEYS.fiatjaf.toLowerCase()]);
+      expect(users).not.toContain(TEST_PUBKEYS.snowden.toLowerCase());
+    });
+
+    it("should normalize pubkeys", async () => {
+      const events = createSimpleFollowChain();
+      await ingestEvents(connection, events);
+
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam.toUpperCase(),
+        2,
+      );
+
+      expect(users).toHaveLength(2);
+      expect(users).toContain(TEST_PUBKEYS.fiatjaf.toLowerCase());
+      expect(users).toContain(TEST_PUBKEYS.snowden.toLowerCase());
+    });
+
+    it("should return empty array for disconnected component", async () => {
+      const events = createDisconnectedGraph();
+      await ingestEvents(connection, events);
+
+      const users = await getUsersWithinDistance(
+        connection,
+        TEST_PUBKEYS.adam,
+        3,
+      );
+
+      // Should only contain pubkeys from adam's component, not bob's
+      expect(users).toContain(TEST_PUBKEYS.fiatjaf.toLowerCase());
+      expect(users).not.toContain(TEST_PUBKEYS.bob.toLowerCase());
+      expect(users).not.toContain(TEST_PUBKEYS.alice.toLowerCase());
     });
   });
 });

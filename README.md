@@ -37,6 +37,10 @@ if (path) {
   console.log(`Path: ${path.path.join(" → ")}`);
 }
 
+// Get all users within 2 hops
+const nearbyUsers = await analyzer.getUsersWithinDistance("pubkey1...", 2);
+console.log(`Users within 2 hops: ${nearbyUsers.length}`);
+
 // Get graph statistics
 const stats = await analyzer.getStats();
 console.log(`Total follows: ${stats.totalFollows}`);
@@ -94,6 +98,18 @@ const path = await analyzer.getShortestPath(
 );
 
 // Returns: { path: string[], distance: number } | null
+```
+
+### Finding Users Within Distance
+
+```typescript
+// Get all users within specified distance
+const users = await analyzer.getUsersWithinDistance(
+  fromPubkey,
+  distance, // maximum number of hops
+);
+
+// Returns: string[] - array of pubkeys (excluding the starting pubkey)
 ```
 
 ### Graph Statistics

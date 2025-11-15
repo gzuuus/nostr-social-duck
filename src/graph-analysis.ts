@@ -207,3 +207,86 @@ export async function getPubkeyDegree(
     inDegree: Number(row[1]),
   };
 }
+
+/**
+ * Gets all pubkeys reachable from a starting pubkey within a specified distance
+ *
+ * Uses DuckDB's recursive CTE with USING KEY to efficiently traverse the graph
+ * and collect all unique pubkeys within the distance limit.
+ *
+ * @param connection - Active DuckDB connection
+ * @param fromPubkey - Starting pubkey (will be normalized to lowercase)
+ * @param distance - Maximum distance (number of hops) to search
+ * @returns Promise resolving to array of pubkeys (excluding the starting pubkey)
+ */
+export async function getUsersWithinDistance(
+  connection: DuckDBConnection,
+  fromPubkey: string,
+  distance: number,
+): Promise<string[]> {
+  // Normalize pubkey to lowercase for consistent comparison
+  const normalizedFrom = normalizePubkey(fromPubkey);
+
+  // Handle edge cases
+  if (distance < 1) {
+    return [];
+  }
+
+  // Quick check: Does the starting pubkey exist in the graph?
+  const fromExists = await connection.runAndReadAll(
+    "SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ? LIMIT 1",
+    [normalizedFrom, normalizedFrom],
+  );
+
+  if (fromExists.getRows().length === 0) {
+    // Starting pubkey doesn't exist in the graph
+    return [];
+  }
+
+  // Execute the recursive CTE to find all reachable pubkeys within distance
+  const reader = await connection.runAndReadAll(
+    `
+    WITH RECURSIVE reachable_nodes(start_pubkey, end_pubkey, path, current_distance)
+    USING KEY (end_pubkey) AS (
+      -- Base case: direct follows from source pubkey
+      SELECT
+        follower_pubkey AS start_pubkey,
+        followed_pubkey AS end_pubkey,
+        [follower_pubkey, followed_pubkey] AS path,
+        1 AS current_distance
+      FROM nsd_follows
+      WHERE follower_pubkey = ?
+      
+      UNION
+      
+      -- Recursive case: follow chains with cycle detection
+      SELECT
+        rn.start_pubkey,
+        f.followed_pubkey,
+        list_append(rn.path, f.followed_pubkey) AS path,
+        rn.current_distance + 1 AS current_distance
+      FROM reachable_nodes rn
+      JOIN nsd_follows f ON rn.end_pubkey = f.follower_pubkey
+      WHERE NOT list_contains(rn.path, f.followed_pubkey) -- Prevent cycles
+        AND rn.current_distance < ?
+    )
+    SELECT DISTINCT end_pubkey
+    FROM reachable_nodes
+    WHERE end_pubkey != ? -- Exclude the starting pubkey
+    ORDER BY end_pubkey
+    `,
+    [normalizedFrom, distance, normalizedFrom],
+  );
+
+  const rows = reader.getRows();
+
+  // Extract pubkeys from results
+  const pubkeys: string[] = [];
+  for (const row of rows) {
+    if (row[0] && typeof row[0] === "string") {
+      pubkeys.push(row[0]);
+    }
+  }
+
+  return pubkeys;
+}

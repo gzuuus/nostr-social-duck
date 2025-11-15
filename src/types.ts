@@ -112,6 +112,17 @@ export interface SocialGraphAnalyzer {
   ): Promise<SocialPath | null>;
 
   /**
+   * Get all pubkeys reachable from a starting pubkey within a specified distance
+   * @param fromPubkey - Starting pubkey (64-character hex string)
+   * @param distance - Maximum distance (number of hops) to search
+   * @returns Promise resolving to array of pubkeys (excluding the starting pubkey)
+   */
+  getUsersWithinDistance(
+    fromPubkey: string,
+    distance: number,
+  ): Promise<string[]>;
+
+  /**
    * Get statistics about the current social graph
    * @returns Promise resolving to graph statistics
    */
