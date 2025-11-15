@@ -8,7 +8,7 @@ import { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
  * SQL schema for the follows table
  */
 const CREATE_FOLLOWS_TABLE = `
-CREATE TABLE IF NOT EXISTS follows (
+CREATE TABLE IF NOT EXISTS nsd_follows (
     follower_pubkey VARCHAR(64) NOT NULL,
     followed_pubkey VARCHAR(64) NOT NULL,
     event_id VARCHAR(64) NOT NULL,
@@ -22,13 +22,13 @@ CREATE TABLE IF NOT EXISTS follows (
  */
 const CREATE_INDEXES = `
 -- Index for finding who a pubkey follows (outgoing edges)
-CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_pubkey);
+CREATE INDEX IF NOT EXISTS idx_nsd_follows_follower ON nsd_follows(follower_pubkey);
 
 -- Index for finding who follows a pubkey (incoming edges)
-CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_pubkey);
+CREATE INDEX IF NOT EXISTS idx_nsd_follows_followed ON nsd_follows(followed_pubkey);
 
 -- Compound index for efficient lookups
-CREATE INDEX IF NOT EXISTS idx_follows_compound ON follows(follower_pubkey, followed_pubkey);
+CREATE INDEX IF NOT EXISTS idx_nsd_follows_compound ON nsd_follows(follower_pubkey, followed_pubkey);
 `;
 
 /**
@@ -67,12 +67,12 @@ export async function getTableStats(connection: DuckDBConnection): Promise<{
   uniqueEvents: number;
 }> {
   const reader = await connection.runAndReadAll(`
-    SELECT 
+    SELECT
       COUNT(*) as total_follows,
       COUNT(DISTINCT follower_pubkey) as unique_followers,
       COUNT(DISTINCT followed_pubkey) as unique_followed,
       COUNT(DISTINCT event_id) as unique_events
-    FROM follows
+    FROM nsd_follows
   `);
 
   const rows = reader.getRows();
@@ -108,7 +108,7 @@ export async function pubkeyExists(
   const reader = await connection.runAndReadAll(
     `
     SELECT 1
-    FROM follows
+    FROM nsd_follows
     WHERE follower_pubkey = ? OR followed_pubkey = ?
     LIMIT 1
     `,
@@ -131,7 +131,7 @@ export async function getFollowing(
   const reader = await connection.runAndReadAll(
     `
     SELECT DISTINCT followed_pubkey
-    FROM follows
+    FROM nsd_follows
     WHERE follower_pubkey = ?
     ORDER BY followed_pubkey
     `,
@@ -154,7 +154,7 @@ export async function getFollowers(
   const reader = await connection.runAndReadAll(
     `
     SELECT DISTINCT follower_pubkey
-    FROM follows
+    FROM nsd_follows
     WHERE followed_pubkey = ?
     ORDER BY follower_pubkey
     `,

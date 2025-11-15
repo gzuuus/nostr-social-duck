@@ -3,6 +3,7 @@
  */
 
 import { DuckDBConnection } from "@duckdb/node-api";
+import type { DuckDBArrayValue } from "@duckdb/node-api";
 import type { SocialPath } from "./types.js";
 import { normalizePubkey } from "./parser.js";
 
@@ -35,18 +36,17 @@ export async function findShortestPath(
     return {
       path: [normalizedFrom],
       distance: 0,
-      pubkeys: [normalizedFrom],
     };
   }
 
   // Quick check: Do both pubkeys exist in the graph?
   const fromExists = await connection.runAndReadAll(
-    "SELECT 1 FROM follows WHERE follower_pubkey = ? OR followed_pubkey = ? LIMIT 1",
+    "SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ? LIMIT 1",
     [normalizedFrom, normalizedFrom],
   );
 
   const toExists = await connection.runAndReadAll(
-    "SELECT 1 FROM follows WHERE follower_pubkey = ? OR followed_pubkey = ? LIMIT 1",
+    "SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ? LIMIT 1",
     [normalizedTo, normalizedTo],
   );
 
@@ -66,7 +66,7 @@ export async function findShortestPath(
         followed_pubkey AS end_pubkey,
         [follower_pubkey, followed_pubkey] AS path,
         1 AS distance
-      FROM follows
+      FROM nsd_follows
       WHERE follower_pubkey = ?
       
       UNION
@@ -78,7 +78,7 @@ export async function findShortestPath(
         list_append(sp.path, f.followed_pubkey) AS path,
         sp.distance + 1 AS distance
       FROM social_path sp
-      JOIN follows f ON sp.end_pubkey = f.follower_pubkey
+      JOIN nsd_follows f ON sp.end_pubkey = f.follower_pubkey
       WHERE NOT list_contains(sp.path, f.followed_pubkey) -- Prevent cycles
         AND sp.distance < ?
     )
@@ -99,16 +99,15 @@ export async function findShortestPath(
   }
 
   const row = rows[0]!;
-  // DuckDB returns arrays as DuckDBArrayValue, need to extract items
-  // TODO: Need to improve this any type to use proper typing
-  const pathValue = row[0] as any;
-  const path = Array.isArray(pathValue) ? pathValue : pathValue?.items || [];
+  const path =
+    (Array.isArray(row[0])
+      ? row[0]
+      : (row[0] as DuckDBArrayValue | undefined)?.items) || [];
   const distance = Number(row[1]);
 
   return {
-    path,
+    path: path as string[],
     distance,
-    pubkeys: path,
   };
 }
 
@@ -131,7 +130,7 @@ export async function isDirectFollow(
   const reader = await connection.runAndReadAll(
     `
     SELECT 1
-    FROM follows
+    FROM nsd_follows
     WHERE follower_pubkey = ?
       AND followed_pubkey = ?
     LIMIT 1
@@ -161,8 +160,8 @@ export async function areMutualFollows(
   const reader = await connection.runAndReadAll(
     `
     SELECT COUNT(*) as count
-    FROM follows f1
-    JOIN follows f2 ON
+    FROM nsd_follows f1
+    JOIN nsd_follows f2 ON
       f1.follower_pubkey = f2.followed_pubkey AND
       f1.followed_pubkey = f2.follower_pubkey
     WHERE f1.follower_pubkey = ?
@@ -191,8 +190,8 @@ export async function getPubkeyDegree(
   const reader = await connection.runAndReadAll(
     `
     SELECT
-      (SELECT COUNT(*) FROM follows WHERE follower_pubkey = ?) as out_degree,
-      (SELECT COUNT(*) FROM follows WHERE followed_pubkey = ?) as in_degree
+      (SELECT COUNT(*) FROM nsd_follows WHERE follower_pubkey = ?) as out_degree,
+      (SELECT COUNT(*) FROM nsd_follows WHERE followed_pubkey = ?) as in_degree
     `,
     [normalized, normalized],
   );

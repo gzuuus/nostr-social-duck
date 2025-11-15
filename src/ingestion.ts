@@ -58,7 +58,7 @@ export async function ingestEvent(
     }
 
     await connection.run(
-      `INSERT INTO follows (follower_pubkey, followed_pubkey, event_id, created_at) VALUES ${values}`,
+      `INSERT INTO nsd_follows (follower_pubkey, followed_pubkey, event_id, created_at) VALUES ${values}`,
       params,
     );
   }
@@ -110,7 +110,7 @@ export async function deleteFollowsForPubkey(
   connection: DuckDBConnection,
   pubkey: string,
 ): Promise<void> {
-  await connection.run("DELETE FROM follows WHERE follower_pubkey = ?", [
+  await connection.run("DELETE FROM nsd_follows WHERE follower_pubkey = ?", [
     pubkey,
   ]);
 }

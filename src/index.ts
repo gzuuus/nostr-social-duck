@@ -32,8 +32,6 @@ export {
 export {
   initializeDatabase,
   setupSchema,
-  clearFollows,
-  dropSchema,
   getTableStats,
   pubkeyExists,
   getFollowing,

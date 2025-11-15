@@ -39,16 +39,21 @@ import { findShortestPath } from "./graph-analysis.js";
  * ```
  */
 export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
-  private instance: DuckDBInstance;
+  private instance: DuckDBInstance | null = null;
   private connection: DuckDBConnection | null = null;
   private maxDepth: number;
   private closed: boolean = false;
 
   /**
-   * Private constructor - use static create() method instead
+   * Private constructor - use static create() or connect() methods instead
    */
-  private constructor(instance: DuckDBInstance, maxDepth: number) {
+  private constructor(
+    instance: DuckDBInstance | null,
+    connection: DuckDBConnection | null,
+    maxDepth: number,
+  ) {
     this.instance = instance;
+    this.connection = connection;
     this.maxDepth = maxDepth;
   }
 
@@ -78,11 +83,44 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     const instance = await initializeDatabase(dbPath);
 
     // Create analyzer instance
-    const analyzer = new DuckDBSocialGraphAnalyzer(instance, maxDepth);
+    const analyzer = new DuckDBSocialGraphAnalyzer(instance, null, maxDepth);
 
     // Get connection and setup schema
     await analyzer.ensureConnection();
     await setupSchema(analyzer.connection!);
+
+    return analyzer;
+  }
+
+  /**
+   * Creates a new SocialGraphAnalyzer instance from an existing DuckDB connection
+   *
+   * This method allows using the library with an existing DuckDB connection,
+   * enabling integration with applications that already use DuckDB for other purposes.
+   *
+   * @param connection - Existing DuckDB connection
+   * @param maxDepth - Maximum search depth for paths (default: 6)
+   * @returns Promise resolving to a new analyzer instance
+   *
+   * @example
+   * ```typescript
+   * // Use existing connection
+   * const connection = await myInstance.connect();
+   * const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection);
+   *
+   * // Use with custom maxDepth
+   * const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 10);
+   * ```
+   */
+  static async connect(
+    connection: DuckDBConnection,
+    maxDepth: number = 6,
+  ): Promise<DuckDBSocialGraphAnalyzer> {
+    // Create analyzer instance with external connection
+    const analyzer = new DuckDBSocialGraphAnalyzer(null, connection, maxDepth);
+
+    // Setup schema on the external connection
+    await setupSchema(connection);
 
     return analyzer;
   }
@@ -97,6 +135,11 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     }
 
     if (!this.connection) {
+      if (!this.instance) {
+        throw new Error(
+          "No database instance available - use connect() method for external connections",
+        );
+      }
       this.connection = await this.instance.connect();
     }
   }
@@ -213,7 +256,8 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
       return;
     }
 
-    if (this.connection) {
+    // Only close connection if we own it (created via create(), not connect())
+    if (this.connection && this.instance) {
       this.connection.closeSync();
       this.connection = null;
     }

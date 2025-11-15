@@ -54,8 +54,6 @@ export interface SocialPath {
   path: string[];
   /** The distance (number of hops) in the path */
   distance: number;
-  /** Alias for path - array of pubkeys in the path */
-  pubkeys: string[];
 }
 
 /**
