@@ -10,7 +10,12 @@ import type {
   GraphStats,
   SocialGraphAnalyzer as ISocialGraphAnalyzer,
 } from "./types.js";
-import { initializeDatabase, setupSchema, getTableStats } from "./database.js";
+import {
+  initializeDatabase,
+  setupSchema,
+  getTableStats,
+  pubkeyExists,
+} from "./database.js";
 import {
   ingestEvent as ingestSingleEvent,
   ingestEvents as ingestMultipleEvents,
@@ -304,6 +309,23 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   async getStats(): Promise<GraphStats> {
     await this.ensureConnection();
     return getTableStats(this.connection!);
+  }
+
+  /**
+   * Checks if a pubkey exists in the graph (either as follower or followed)
+   *
+   * @param pubkey - The pubkey to check
+   * @returns Promise resolving to true if the pubkey exists
+   *
+   * @example
+   * ```typescript
+   * const exists = await analyzer.pubkeyExists("abc123...");
+   * console.log(`Pubkey exists in graph: ${exists}`);
+   * ```
+   */
+  async pubkeyExists(pubkey: string): Promise<boolean> {
+    await this.ensureConnection();
+    return pubkeyExists(this.connection!, pubkey);
   }
 
   /**

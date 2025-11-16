@@ -133,6 +133,38 @@ const stats = await analyzer.getStats();
 // }
 ```
 
+### Additional Graph Analysis Methods
+
+```typescript
+// Check if a pubkey exists in the graph (as follower or followed)
+const exists = await analyzer.pubkeyExists(pubkey);
+// Returns: boolean
+
+// Check if a direct follow relationship exists
+const isFollowing = await analyzer.isDirectFollow(
+  followerPubkey,
+  followedPubkey,
+);
+// Returns: boolean
+
+// Check if two pubkeys mutually follow each other
+const areMutual = await analyzer.areMutualFollows(pubkey1, pubkey2);
+// Returns: boolean
+
+// Get the degree (number of follows) for a pubkey
+const degree = await analyzer.getPubkeyDegree(pubkey);
+// Returns: { outDegree: number, inDegree: number }
+
+// Find the shortest distance between two pubkeys (performance-optimized)
+const distance = await analyzer.getShortestDistance(
+  fromPubkey,
+  toPubkey,
+  maxDepth,
+);
+// Returns: number | null - distance in hops, or null if no path exists
+// Note: This is 2-3x faster than getShortestPath for multi-hop paths
+```
+
 ## Data Model
 
 The library uses a simple, efficient schema:

@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.6
+
+### Patch Changes
+
+- feat: export all graph analysis methods from main library entry point
+
 ## 0.1.5
 
 ### Patch Changes

@@ -144,6 +144,13 @@ export interface SocialGraphAnalyzer {
   getStats(): Promise<GraphStats>;
 
   /**
+   * Check if a pubkey exists in the graph (either as follower or followed)
+   * @param pubkey - The pubkey to check
+   * @returns Promise resolving to true if the pubkey exists
+   */
+  pubkeyExists(pubkey: string): Promise<boolean>;
+
+  /**
    * Close the database connection
    * @returns Promise that resolves when the connection is closed
    */

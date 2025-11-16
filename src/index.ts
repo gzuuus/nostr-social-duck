@@ -41,9 +41,11 @@ export {
 // Graph analysis utilities (for advanced usage)
 export {
   findShortestPath,
+  findShortestDistance,
   isDirectFollow,
   areMutualFollows,
   getPubkeyDegree,
+  getUsersWithinDistance,
 } from "./graph-analysis.js";
 
 // Ingestion utilities (for advanced usage)
