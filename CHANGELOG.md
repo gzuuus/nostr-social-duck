@@ -1,5 +1,18 @@
 # nostr-social-duck
 
+## 0.1.4
+
+### Patch Changes
+
+- feat: add TypeScript declaration file generation
+  - Update build process to generate .d.ts files alongside JavaScript bundle
+  - Add TypeScript compiler as dev dependency
+  - Configure tsconfig.json for proper declaration file generation
+  - Streamline build script to handle both JS bundling and type declaration generation
+  - Fix type resolution issues in external projects by providing proper type definitions
+
+  The library now exports complete TypeScript types, resolving the "Could not find a declaration file for module 'nostr-social-duck'" error in consuming projects.
+
 ## 0.1.3
 
 ### Patch Changes
