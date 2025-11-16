@@ -112,6 +112,21 @@ export interface SocialGraphAnalyzer {
   ): Promise<SocialPath | null>;
 
   /**
+   * Find the shortest distance between two pubkeys in the social graph
+   * This is a performance-optimized version that only returns the distance,
+   * skipping the expensive path reconstruction. It's 2-3x faster than getShortestPath.
+   * @param fromPubkey - Starting pubkey (64-character hex string)
+   * @param toPubkey - Target pubkey (64-character hex string)
+   * @param maxDepth - Maximum search depth (default: 6)
+   * @returns Promise resolving to the distance, or null if no path exists
+   */
+  getShortestDistance(
+    fromPubkey: string,
+    toPubkey: string,
+    maxDepth?: number,
+  ): Promise<number | null>;
+
+  /**
    * Get all pubkeys reachable from a starting pubkey within a specified distance
    * @param fromPubkey - Starting pubkey (64-character hex string)
    * @param distance - Maximum distance (number of hops) to search

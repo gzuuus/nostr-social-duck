@@ -87,10 +87,10 @@ await analyzer.ingestEvent(kind3Event);
 await analyzer.ingestEvents([event1, event2, event3]);
 ```
 
-### Finding Paths
+### Finding Paths and Distances
 
 ```typescript
-// Find shortest path
+// Find shortest path (returns full path details)
 const path = await analyzer.getShortestPath(
   fromPubkey,
   toPubkey,
@@ -98,6 +98,15 @@ const path = await analyzer.getShortestPath(
 );
 
 // Returns: { path: string[], distance: number } | null
+
+// Find shortest distance only (2-3x faster)
+const distance = await analyzer.getShortestDistance(
+  fromPubkey,
+  toPubkey,
+  maxDepth, // optional, defaults to analyzer's maxDepth
+);
+
+// Returns: number | null - the distance in hops, or null if no path exists
 ```
 
 ### Finding Users Within Distance

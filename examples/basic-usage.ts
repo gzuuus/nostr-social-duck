@@ -19,7 +19,7 @@ async function main() {
   // Create an in-memory analyzer with reasonable maxDepth for demo
   console.log("Creating analyzer...");
   const analyzer = await DuckDBSocialGraphAnalyzer.create({
-    maxDepth: 6, // Use lower depth for better performance in examples
+    dbPath: "examples/social-graph.db",
   });
 
   try {
@@ -36,10 +36,10 @@ async function main() {
 
     console.log(`Found ${events.length} events\n`);
 
-    // Ingest all events
-    console.log("Ingesting events into the graph...");
-    await analyzer.ingestEvents(events);
-    console.log("✓ Events ingested successfully\n");
+    // // Ingest all events
+    // console.log("Ingesting events into the graph...");
+    // await analyzer.ingestEvents(events);
+    // console.log("✓ Events ingested successfully\n");
 
     // Get and display statistics
     console.log("Graph Statistics:");
@@ -51,8 +51,10 @@ async function main() {
 
     // Example: Find shortest path between two pubkeys
     if (events.length >= 2) {
-      const fromPubkey = events[0]!.pubkey;
-      const toPubkey = events[1]!.pubkey;
+      const fromPubkey =
+        "6e468422dfb74a5738702a8823b9b28168abab8655faacb6853cd0ee15deee93";
+      const toPubkey =
+        "ee07e263a68afd3c9cc25bec9bde31c25b4156e71466bb3df9185be11be01122";
 
       console.log("Finding shortest path (with timeout):");
       console.log(`  From: ${fromPubkey.substring(0, 16)}...`);
@@ -61,7 +63,7 @@ async function main() {
 
       try {
         // Add timeout to prevent hanging on disconnected nodes
-        const pathPromise = analyzer.getShortestPath(fromPubkey, toPubkey, 3);
+        const pathPromise = analyzer.getShortestPath(fromPubkey, toPubkey, 6);
         const timeoutPromise = new Promise<null>((_, reject) =>
           setTimeout(
             () => reject(new Error("Query timeout after 10 seconds")),
@@ -90,31 +92,6 @@ async function main() {
         }
       }
     }
-
-    // Example: Check a direct follow relationship
-    if (events.length >= 1 && events[0]!.tags.length > 0) {
-      console.log("\n---\n");
-      const follower = events[0]!.pubkey;
-      const followed = events[0]!.tags.find((t) => t[0] === "p")?.[1];
-
-      if (followed) {
-        console.log("Checking direct follow:");
-        console.log(`  From: ${follower.substring(0, 16)}...`);
-        console.log(`  To:   ${followed.substring(0, 16)}...`);
-
-        const path = await analyzer.getShortestPath(follower, followed, 2);
-
-        if (path) {
-          console.log(`\n✓ Path found!`);
-          console.log(`  Distance: ${path.distance} hops`);
-          if (path.distance === 1) {
-            console.log(`  (Direct follow)`);
-          }
-        } else {
-          console.log("\n✗ No path found");
-        }
-      }
-    }
   } catch (error) {
     console.error("Error:", error);
     throw error;
@@ -123,6 +100,7 @@ async function main() {
     console.log("\nClosing analyzer...");
     await analyzer.close();
     console.log("✓ Done!");
+    process.exit(0);
   }
 }
 

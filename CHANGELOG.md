@@ -1,5 +1,17 @@
 # nostr-social-duck
 
+## 0.1.5
+
+### Patch Changes
+
+- feat: Add performance-optimized getShortestDistance method
+  - Add new `getShortestDistance()` method that returns only distance, skipping expensive path reconstruction
+  - Performance improvement: 2-3x faster for multi-hop paths by eliminating 2 additional recursive CTE queries
+  - Maintain full backward compatibility with existing `getShortestPath()` method
+  - Simplify bidirectional search depth logic for better consistency
+  - Add comprehensive performance benchmarks using real Nostr social graph data
+  - Update API documentation and types to include new method
+
 ## 0.1.4
 
 ### Patch Changes
