@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.8
+
+### Patch Changes
+
+- perf(db): optimize db footprint
+
 ## 0.1.7
 
 ### Patch Changes

@@ -1,7 +1,7 @@
 {
   "name": "nostr-social-duck",
   "description": "Nostr Social Graph Analysis library using DuckDB for efficient graph operations",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "author": "Gzuuus",
   "repository": {
     "type": "git",
