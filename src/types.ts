@@ -30,8 +30,6 @@ export interface FollowRelationship {
   follower_pubkey: string;
   /** The pubkey being followed */
   followed_pubkey: string;
-  /** The event ID this relationship came from */
-  event_id: string;
   /** Unix timestamp when this relationship was recorded */
   created_at: number;
 }

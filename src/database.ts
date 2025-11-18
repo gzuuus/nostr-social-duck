@@ -6,29 +6,34 @@ import { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
 
 /**
  * SQL schema for the follows table
+ *
+ * Optimizations:
+ * 1. Removed event_id from PRIMARY KEY - we only keep latest event per follower
+ * 2. Removed event_id column entirely - not needed for graph analysis
+ * 3. Simplified to just the edge data: follower -> followed with timestamp
+ * 4. PRIMARY KEY on (follower_pubkey, followed_pubkey) provides implicit index
  */
 const CREATE_FOLLOWS_TABLE = `
 CREATE TABLE IF NOT EXISTS nsd_follows (
     follower_pubkey VARCHAR(64) NOT NULL,
     followed_pubkey VARCHAR(64) NOT NULL,
-    event_id VARCHAR(64) NOT NULL,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY (follower_pubkey, followed_pubkey, event_id)
+    PRIMARY KEY (follower_pubkey, followed_pubkey)
 );
 `;
 
 /**
  * SQL to create indexes for efficient graph traversal
+ *
+ * Optimizations:
+ * 1. Removed compound index - PRIMARY KEY already provides this
+ * 2. Only need index on followed_pubkey for reverse lookups
+ * 3. follower_pubkey is already indexed via PRIMARY KEY
  */
 const CREATE_INDEXES = `
--- Index for finding who a pubkey follows (outgoing edges)
-CREATE INDEX IF NOT EXISTS idx_nsd_follows_follower ON nsd_follows(follower_pubkey);
-
 -- Index for finding who follows a pubkey (incoming edges)
+-- The PRIMARY KEY already indexes follower_pubkey for outgoing edges
 CREATE INDEX IF NOT EXISTS idx_nsd_follows_followed ON nsd_follows(followed_pubkey);
-
--- Compound index for efficient lookups
-CREATE INDEX IF NOT EXISTS idx_nsd_follows_compound ON nsd_follows(follower_pubkey, followed_pubkey);
 `;
 
 /**
@@ -73,7 +78,7 @@ export async function getTableStats(connection: DuckDBConnection): Promise<{
       COUNT(*) as total_follows,
       COUNT(DISTINCT follower_pubkey) as unique_followers,
       COUNT(DISTINCT followed_pubkey) as unique_followed,
-      COUNT(DISTINCT event_id) as unique_events
+      COUNT(DISTINCT follower_pubkey) as unique_events
     FROM nsd_follows
   `);
 

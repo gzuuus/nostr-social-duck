@@ -9,16 +9,19 @@ import { parseKind3Event } from "./parser.js";
 /**
  * Bulk deletes follows for multiple pubkeys using a single query
  */
-async function bulkDeleteFollows(connection: DuckDBConnection, pubkeys: string[]): Promise<void> {
+async function bulkDeleteFollows(
+  connection: DuckDBConnection,
+  pubkeys: string[],
+): Promise<void> {
   if (pubkeys.length === 0) {
     return;
   }
-  
+
   // Use a single query with IN clause for bulk deletion
-  const placeholders = pubkeys.map(() => '?').join(', ');
+  const placeholders = pubkeys.map(() => "?").join(", ");
   await connection.run(
     `DELETE FROM nsd_follows WHERE follower_pubkey IN (${placeholders})`,
-    pubkeys
+    pubkeys,
   );
 }
 
@@ -46,7 +49,7 @@ export async function ingestEvent(
 
   // Use transaction for atomic operations
   await connection.run("BEGIN TRANSACTION");
-  
+
   try {
     // Delete existing follows from this pubkey (event replacement)
     await deleteFollowsForPubkey(connection, event.pubkey);
@@ -55,9 +58,10 @@ export async function ingestEvent(
     const seenKeys = new Set<string>();
     const uniqueFollows: FollowRelationship[] = [];
 
-    // Deduplicate follows by (follower_pubkey, followed_pubkey, event_id)
+    // Deduplicate follows by (follower_pubkey, followed_pubkey) only
+    // Since primary key is now (follower_pubkey, followed_pubkey)
     for (const follow of follows) {
-      const key = `${follow.follower_pubkey}:${follow.followed_pubkey}:${follow.event_id}`;
+      const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
       if (!seenKeys.has(key)) {
         seenKeys.add(key);
         uniqueFollows.push(follow);
@@ -68,20 +72,19 @@ export async function ingestEvent(
     const CHUNK_SIZE = 500;
     for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
       const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
-      const values = chunk.map(() => "(?, ?, ?, ?)").join(", ");
+      const values = chunk.map(() => "(?, ?, ?)").join(", ");
       const params: (string | number)[] = [];
 
       for (const follow of chunk) {
         params.push(
           follow.follower_pubkey,
           follow.followed_pubkey,
-          follow.event_id,
           follow.created_at,
         );
       }
 
       await connection.run(
-        `INSERT INTO nsd_follows (follower_pubkey, followed_pubkey, event_id, created_at) VALUES ${values}`,
+        `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
         params,
       );
     }
@@ -125,26 +128,41 @@ export async function ingestEvents(
     }
   }
 
-  console.log(`Processing ${latestEventsByPubkey.size} unique events after deduplication`);
+  console.log(
+    `Processing ${latestEventsByPubkey.size} unique events after deduplication`,
+  );
 
   // Process events in batches for better performance
   const BATCH_SIZE = 1000;
   const latestEvents = Array.from(latestEventsByPubkey.values());
   const totalBatches = Math.ceil(latestEvents.length / BATCH_SIZE);
-  
+
   for (let i = 0; i < latestEvents.length; i += BATCH_SIZE) {
     const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
     const batch = latestEvents.slice(i, i + BATCH_SIZE);
-    console.log(`Processing batch ${batchNumber}/${totalBatches} (${batch.length} events)...`);
-    
+    console.log(
+      `Processing batch ${batchNumber}/${totalBatches} (${batch.length} events)...`,
+    );
+
     const startTime = performance.now();
     await processEventBatch(connection, batch);
     const endTime = performance.now();
-    
-    console.log(`Batch ${batchNumber} completed in ${(endTime - startTime).toFixed(2)}ms`);
+
+    console.log(
+      `Batch ${batchNumber} completed in ${(endTime - startTime).toFixed(2)}ms`,
+    );
   }
 
-  console.log(`Ingestion completed: ${latestEventsByPubkey.size} events processed`);
+  console.log(
+    `Ingestion completed: ${latestEventsByPubkey.size} events processed`,
+  );
+
+  // Reclaim space after deletions to prevent database file growth
+  // CHECKPOINT writes all changes to disk and helps with space reclamation
+  await connection.run("CHECKPOINT");
+
+  // Note: VACUUM in DuckDB doesn't reclaim space like in other databases
+  // The main space reclamation happens through CHECKPOINT
 }
 
 /**
@@ -163,14 +181,13 @@ async function processEventBatch(
 
   // Use transaction for atomic operations
   await connection.run("BEGIN TRANSACTION");
-  
+
   try {
     // Process follows with minimal memory allocations
     const seenKeys = new Set<string>();
     const uniqueFollows: Array<{
       follower_pubkey: string;
       followed_pubkey: string;
-      event_id: string;
       created_at: number;
     }> = [];
     const pubkeysToDelete = new Set<string>();
@@ -180,13 +197,18 @@ async function processEventBatch(
       const { follows } = parseKind3Event(event);
       if (follows.length > 0) {
         pubkeysToDelete.add(event.pubkey);
-        
+
         // Deduplicate and collect follows simultaneously
+        // Deduplicate by (follower_pubkey, followed_pubkey) only
         for (const follow of follows) {
-          const key = `${follow.follower_pubkey}:${follow.followed_pubkey}:${follow.event_id}`;
+          const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
           if (!seenKeys.has(key)) {
             seenKeys.add(key);
-            uniqueFollows.push(follow);
+            uniqueFollows.push({
+              follower_pubkey: follow.follower_pubkey,
+              followed_pubkey: follow.followed_pubkey,
+              created_at: follow.created_at,
+            });
           }
         }
       }
@@ -206,20 +228,19 @@ async function processEventBatch(
     const CHUNK_SIZE = 500;
     for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
       const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
-      const values = chunk.map(() => "(?, ?, ?, ?)").join(", ");
+      const values = chunk.map(() => "(?, ?, ?)").join(", ");
       const params: (string | number)[] = [];
 
       for (const follow of chunk) {
         params.push(
           follow.follower_pubkey,
           follow.followed_pubkey,
-          follow.event_id,
           follow.created_at,
         );
       }
 
       await connection.run(
-        `INSERT INTO nsd_follows (follower_pubkey, followed_pubkey, event_id, created_at) VALUES ${values}`,
+        `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
         params,
       );
     }

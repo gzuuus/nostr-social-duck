@@ -57,11 +57,11 @@ export function parseKind3Event(event: NostrEvent): ParsedKind3Event {
 
   // Extract follow relationships from 'p' tags
   const follows: FollowRelationship[] = [];
-  
+
   // Optimized loop with minimal operations
   for (let i = 0; i < event.tags.length; i++) {
     const tag = event.tags[i];
-    
+
     // Must be an array with at least 2 elements
     if (!Array.isArray(tag) || tag.length < 2) {
       continue;
@@ -82,7 +82,6 @@ export function parseKind3Event(event: NostrEvent): ParsedKind3Event {
     follows.push({
       follower_pubkey: event.pubkey,
       followed_pubkey: followedPubkey.toLowerCase(), // Normalize to lowercase
-      event_id: event.id,
       created_at: event.created_at,
     });
   }
