@@ -46,6 +46,7 @@ export {
   areMutualFollows,
   getPubkeyDegree,
   getUsersWithinDistance,
+  getAllUniquePubkeys,
 } from "./graph-analysis.js";
 
 // Ingestion utilities (for advanced usage)

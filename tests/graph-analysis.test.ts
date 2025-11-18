@@ -10,6 +10,7 @@ import {
   areMutualFollows,
   getPubkeyDegree,
   getUsersWithinDistance,
+  getAllUniquePubkeys,
 } from "../src/graph-analysis.js";
 import { initializeDatabase, setupSchema } from "../src/database.js";
 import { ingestEvents } from "../src/ingestion.js";
@@ -391,7 +392,7 @@ describe("Graph Analysis", () => {
       expect(users).toEqual([]);
     });
 
-    it("should return empty array for non-existent pubkey", async () => {
+    it("should return null for non-existent pubkey", async () => {
       const events = createSimpleFollowChain();
       await ingestEvents(connection, events);
 
@@ -402,7 +403,7 @@ describe("Graph Analysis", () => {
         2,
       );
 
-      expect(users).toEqual([]);
+      expect(users).toBeNull();
     });
 
     it("should return direct follows for distance 1", async () => {
@@ -513,6 +514,75 @@ describe("Graph Analysis", () => {
       expect(users).toContain(TEST_PUBKEYS.fiatjaf.toLowerCase());
       expect(users).not.toContain(TEST_PUBKEYS.bob.toLowerCase());
       expect(users).not.toContain(TEST_PUBKEYS.alice.toLowerCase());
+    });
+  });
+
+  describe("getAllUniquePubkeys", () => {
+    it("should return empty array for empty graph", async () => {
+      const pubkeys = await getAllUniquePubkeys(connection);
+
+      expect(pubkeys).toEqual([]);
+    });
+
+    it("should return all unique pubkeys from the graph", async () => {
+      const events = createComplexGraph();
+      await ingestEvents(connection, events);
+
+      const pubkeys = await getAllUniquePubkeys(connection);
+
+      // Should contain all pubkeys from the complex graph
+      const expectedPubkeys = [
+        TEST_PUBKEYS.adam,
+        TEST_PUBKEYS.fiatjaf,
+        TEST_PUBKEYS.snowden,
+        TEST_PUBKEYS.sirius,
+      ].map((p) => p.toLowerCase());
+
+      expect(pubkeys).toHaveLength(expectedPubkeys.length);
+      for (const pubkey of expectedPubkeys) {
+        expect(pubkeys).toContain(pubkey);
+      }
+    });
+
+    it("should not contain duplicates", async () => {
+      const events = [
+        createMockKind3Event(TEST_PUBKEYS.adam, [TEST_PUBKEYS.fiatjaf]),
+        createMockKind3Event(TEST_PUBKEYS.fiatjaf, [TEST_PUBKEYS.adam]), // Mutual follow
+      ];
+      await ingestEvents(connection, events);
+
+      const pubkeys = await getAllUniquePubkeys(connection);
+
+      // Should contain both pubkeys without duplicates
+      const expectedPubkeys = [
+        TEST_PUBKEYS.adam,
+        TEST_PUBKEYS.fiatjaf,
+      ].map((p) => p.toLowerCase());
+
+      expect(pubkeys).toHaveLength(expectedPubkeys.length);
+      expect(pubkeys).toEqual(expect.arrayContaining(expectedPubkeys));
+    });
+
+    it("should include both followers and followed pubkeys", async () => {
+      const events = [
+        createMockKind3Event(TEST_PUBKEYS.adam, [TEST_PUBKEYS.fiatjaf]),
+        createMockKind3Event(TEST_PUBKEYS.snowden, [TEST_PUBKEYS.adam]), // adam is followed by snowden
+      ];
+      await ingestEvents(connection, events);
+
+      const pubkeys = await getAllUniquePubkeys(connection);
+
+      // Should contain adam (follower and followed), fiatjaf (followed), snowden (follower)
+      const expectedPubkeys = [
+        TEST_PUBKEYS.adam,
+        TEST_PUBKEYS.fiatjaf,
+        TEST_PUBKEYS.snowden,
+      ].map((p) => p.toLowerCase());
+
+      expect(pubkeys).toHaveLength(expectedPubkeys.length);
+      for (const pubkey of expectedPubkeys) {
+        expect(pubkeys).toContain(pubkey);
+      }
     });
   });
 });

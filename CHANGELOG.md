@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.9
+
+### Patch Changes
+
+- fix: return null for consistency and add getAllUniquePubkeys method
+
 ## 0.1.8
 
 ### Patch Changes

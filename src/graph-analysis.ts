@@ -351,7 +351,7 @@ export async function getUsersWithinDistance(
   connection: DuckDBConnection,
   fromPubkey: string,
   distance: number,
-): Promise<string[]> {
+): Promise<string[] | null> {
   // Normalize pubkey to lowercase for consistent comparison
   const normalizedFrom = normalizePubkey(fromPubkey);
 
@@ -367,8 +367,8 @@ export async function getUsersWithinDistance(
   );
 
   if (fromExists.getRows().length === 0) {
-    // Starting pubkey doesn't exist in the graph
-    return [];
+    // Starting pubkey doesn't exist in the graph - return null for consistency
+    return null;
   }
 
   // Execute the recursive CTE to find all reachable pubkeys within distance
@@ -437,22 +437,23 @@ export async function findShortestDistance(
   toPubkey: string,
   maxDepth: number = 6,
 ): Promise<number | null> {
-  // Normalize pubkeys to lowercase for consistent comparison
-  const normalizedFrom = normalizePubkey(fromPubkey);
-  const normalizedTo = normalizePubkey(toPubkey);
+  try {
+    // Normalize pubkeys to lowercase for consistent comparison
+    const normalizedFrom = normalizePubkey(fromPubkey);
+    const normalizedTo = normalizePubkey(toPubkey);
 
-  // If source and target are the same, return distance 0
-  if (normalizedFrom === normalizedTo) {
-    return 0;
-  }
+    // If source and target are the same, return distance 0
+    if (normalizedFrom === normalizedTo) {
+      return 0;
+    }
 
-  // Quick check: Do both pubkeys exist in the graph?
-  const existenceReader = await connection.runAndReadAll(
-    `SELECT
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as from_exists,
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as to_exists`,
-    [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
-  );
+    // Quick check: Do both pubkeys exist in the graph?
+    const existenceReader = await connection.runAndReadAll(
+      `SELECT
+        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as from_exists,
+        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as to_exists`,
+      [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
+    );
 
   const existenceRow = existenceReader.getRows()[0];
   if (!existenceRow || !existenceRow[0] || !existenceRow[1]) {
@@ -545,5 +546,54 @@ export async function findShortestDistance(
   }
 
   const row = rows[0]!;
-  return Number(row[0]);
+  const distance = Number(row[0]);
+  return distance;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message :
+                        error !== null && error !== undefined ? String(error) :
+                        'Unknown error (null/undefined)';
+    
+    console.error('[findShortestDistance] Error details:', {
+      fromPubkey,
+      toPubkey,
+      maxDepth,
+      errorMessage: errorMessage,
+      errorStack: error instanceof Error ? error.stack : undefined,
+    });
+    throw new Error(`Failed to execute prepared statement: ${errorMessage}`);
+  }
+}
+
+/**
+ * Gets all unique pubkeys in the social graph (both followers and followed)
+ *
+ * This method efficiently retrieves all pubkeys that appear in the graph,
+ * either as followers (outgoing edges) or followed (incoming edges).
+ *
+ * @param connection - Active DuckDB connection
+ * @returns Promise resolving to array of all unique pubkeys in the graph
+ */
+export async function getAllUniquePubkeys(
+  connection: DuckDBConnection,
+): Promise<string[]> {
+  const reader = await connection.runAndReadAll(`
+    SELECT DISTINCT pubkey
+    FROM (
+      SELECT follower_pubkey AS pubkey FROM nsd_follows
+      UNION ALL
+      SELECT followed_pubkey AS pubkey FROM nsd_follows
+    )
+  `);
+
+  const rows = reader.getRows();
+
+  // Extract pubkeys from results
+  const pubkeys: string[] = [];
+  for (const row of rows) {
+    if (row[0] && typeof row[0] === "string") {
+      pubkeys.push(row[0]);
+    }
+  }
+
+  return pubkeys;
 }

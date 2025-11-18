@@ -133,7 +133,13 @@ export interface SocialGraphAnalyzer {
   getUsersWithinDistance(
     fromPubkey: string,
     distance: number,
-  ): Promise<string[]>;
+  ): Promise<string[] | null>;
+
+  /**
+   * Get all unique pubkeys in the social graph (both followers and followed)
+   * @returns Promise resolving to array of all unique pubkeys in the graph
+   */
+  getAllUniquePubkeys(): Promise<string[]>;
 
   /**
    * Get statistics about the current social graph

@@ -118,7 +118,8 @@ const users = await analyzer.getUsersWithinDistance(
   distance, // maximum number of hops
 );
 
-// Returns: string[] - array of pubkeys (excluding the starting pubkey)
+// Returns: string[] | null - array of pubkeys (excluding the starting pubkey),
+// or null if the starting pubkey doesn't exist in the graph
 ```
 
 ### Graph Statistics
@@ -131,6 +132,15 @@ const stats = await analyzer.getStats();
 //   uniqueFollowed: number,
 //   uniqueEvents: number
 // }
+```
+
+### Getting All Unique Pubkeys
+
+```typescript
+// Get all unique pubkeys in the social graph (both followers and followed)
+const allPubkeys = await analyzer.getAllUniquePubkeys();
+
+// Returns: string[] - array of all unique pubkeys in the graph
 ```
 
 ### Additional Graph Analysis Methods
@@ -154,6 +164,10 @@ const areMutual = await analyzer.areMutualFollows(pubkey1, pubkey2);
 // Get the degree (number of follows) for a pubkey
 const degree = await analyzer.getPubkeyDegree(pubkey);
 // Returns: { outDegree: number, inDegree: number }
+
+// Get all unique pubkeys in the social graph (both followers and followed)
+const allPubkeys = await analyzer.getAllUniquePubkeys();
+// Returns: string[] - array of all unique pubkeys in the graph
 
 // Find the shortest distance between two pubkeys (performance-optimized)
 const distance = await analyzer.getShortestDistance(

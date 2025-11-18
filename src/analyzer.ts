@@ -24,6 +24,7 @@ import {
   findShortestPath,
   findShortestDistance,
   getUsersWithinDistance,
+  getAllUniquePubkeys,
 } from "./graph-analysis.js";
 
 /**
@@ -289,9 +290,28 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   async getUsersWithinDistance(
     fromPubkey: string,
     distance: number,
-  ): Promise<string[]> {
+  ): Promise<string[] | null> {
     await this.ensureConnection();
     return getUsersWithinDistance(this.connection!, fromPubkey, distance);
+  }
+
+  /**
+   * Gets all unique pubkeys in the social graph (both followers and followed)
+   *
+   * This method efficiently retrieves all pubkeys that appear in the graph,
+   * either as followers (outgoing edges) or followed (incoming edges).
+   *
+   * @returns Promise resolving to array of all unique pubkeys in the graph
+   *
+   * @example
+   * ```typescript
+   * const allPubkeys = await analyzer.getAllUniquePubkeys();
+   * console.log(`Total unique pubkeys in graph: ${allPubkeys.length}`);
+   * ```
+   */
+  async getAllUniquePubkeys(): Promise<string[]> {
+    await this.ensureConnection();
+    return getAllUniquePubkeys(this.connection!);
   }
 
   /**
