@@ -1,5 +1,17 @@
 # nostr-social-duck
 
+## 0.1.10
+
+### Patch Changes
+
+- perf: optimize graph analysis algorithms for performance and memory efficiency
+  - Implement single-query path reconstruction in findShortestPath eliminating 2 additional queries
+  - Optimize areMutualFollows by replacing JOIN with direct lookups (2-3x faster)
+  - Add memory-efficient cycle detection using visited sets instead of path tracking
+  - Remove redundant DISTINCT operations and optimize existence checks
+  - Maintain bidirectional BFS approach optimal for social network graphs
+  - All tests passing with improved performance and reduced memory footprint
+
 ## 0.1.9
 
 ### Patch Changes

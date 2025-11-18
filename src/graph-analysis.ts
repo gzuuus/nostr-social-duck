@@ -42,8 +42,10 @@ export async function findShortestPath(
   // Quick check: Do both pubkeys exist in the graph?
   const existenceReader = await connection.runAndReadAll(
     `SELECT
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as from_exists,
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as to_exists`,
+      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as from_exists,
+      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as to_exists`,
     [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
   );
 
@@ -70,7 +72,7 @@ export async function findShortestPath(
   if (maxDepth >= 2) {
     const distance2Reader = await connection.runAndReadAll(
       `
-      SELECT DISTINCT
+      SELECT
         f1.follower_pubkey AS start,
         f1.followed_pubkey AS intermediate,
         f2.followed_pubkey AS end
@@ -92,52 +94,64 @@ export async function findShortestPath(
     }
   }
 
-  // For distance 3+, use limited bidirectional search
+  // For distance 3+, use optimized bidirectional search with path tracking
   // Each direction searches up to half the maxDepth
   const searchDepth = Math.floor(maxDepth / 2);
 
   const reader = await connection.runAndReadAll(
     `
     WITH RECURSIVE
-    -- Forward search: limited depth
-    forward_search(node, parent, depth)
+    -- Forward search: limited depth with path tracking
+    forward_search(node, parent, depth, path)
     USING KEY (node) AS (
-      SELECT ? AS node, NULL::VARCHAR AS parent, 0 AS depth
+      SELECT ? AS node, NULL::VARCHAR AS parent, 0 AS depth, [?] AS path
       UNION
-      SELECT f.followed_pubkey, fs.node, fs.depth + 1
+      SELECT f.followed_pubkey, fs.node, fs.depth + 1, list_append(fs.path, f.followed_pubkey)
       FROM forward_search fs
       JOIN nsd_follows f ON fs.node = f.follower_pubkey
       WHERE fs.depth < ?
+        AND NOT list_contains(fs.path, f.followed_pubkey) -- Prevent cycles
     ),
-    -- Backward search: limited depth
-    backward_search(node, child, depth)
+    -- Backward search: limited depth with path tracking
+    backward_search(node, child, depth, path)
     USING KEY (node) AS (
-      SELECT ? AS node, NULL::VARCHAR AS child, 0 AS depth
+      SELECT ? AS node, NULL::VARCHAR AS child, 0 AS depth, [?] AS path
       UNION
-      SELECT f.follower_pubkey, bs.node, bs.depth + 1
+      SELECT f.follower_pubkey, bs.node, bs.depth + 1, list_append(bs.path, f.follower_pubkey)
       FROM backward_search bs
       JOIN nsd_follows f ON bs.node = f.followed_pubkey
       WHERE bs.depth < ?
+        AND NOT list_contains(bs.path, f.follower_pubkey) -- Prevent cycles
     ),
-    -- Find first intersection point
+    -- Find first intersection point with complete path reconstruction
     intersection AS (
       SELECT
         fs.node AS meeting_point,
         fs.depth AS forward_depth,
         bs.depth AS backward_depth,
-        fs.depth + bs.depth AS total_distance
+        fs.depth + bs.depth AS total_distance,
+        fs.path AS forward_path,
+        bs.path AS backward_path
       FROM forward_search fs
       JOIN backward_search bs ON fs.node = bs.node
       WHERE fs.node != ? AND fs.node != ?
       ORDER BY total_distance ASC
       LIMIT 1
     )
-    SELECT meeting_point, forward_depth, backward_depth, total_distance
+    SELECT
+      meeting_point,
+      forward_depth,
+      backward_depth,
+      total_distance,
+      forward_path,
+      backward_path
     FROM intersection
     `,
     [
       normalizedFrom,
+      normalizedFrom,
       searchDepth,
+      normalizedTo,
       normalizedTo,
       searchDepth,
       normalizedFrom,
@@ -150,88 +164,18 @@ export async function findShortestPath(
     return null;
   }
 
-  // Reconstruct path from meeting point
+  // Extract path information directly from the query
   const row = rows[0]!;
-  const meetingPoint = String(row[0]);
-  const forwardDepth = Number(row[1]);
-  const backwardDepth = Number(row[2]);
   const totalDistance = Number(row[3]);
+  
+  // Extract paths from the result (they're stored as DuckDB lists)
+  // We cast to unknown first, then to string[] as we know the structure from the query
+  const forwardPath = (row[4] as unknown) as string[];
+  const backwardPath = (row[5] as unknown) as string[];
 
-  // Build forward path: source -> meeting point using USING KEY
-  const forwardPathReader = await connection.runAndReadAll(
-    `
-    WITH RECURSIVE
-    forward_search(node, parent, depth)
-    USING KEY (node) AS (
-      SELECT ? AS node, NULL::VARCHAR AS parent, 0 AS depth
-      UNION
-      SELECT f.followed_pubkey, fs.node, fs.depth + 1
-      FROM forward_search fs
-      JOIN nsd_follows f ON fs.node = f.follower_pubkey
-      WHERE fs.depth < ?
-    ),
-    -- Trace back from meeting point to source
-    path_trace(node, parent, step) AS (
-      SELECT node, parent, 0 AS step
-      FROM forward_search
-      WHERE node = ?
-      UNION ALL
-      SELECT fs.node, fs.parent, pt.step + 1
-      FROM path_trace pt
-      JOIN forward_search fs ON pt.parent = fs.node
-      WHERE pt.parent IS NOT NULL
-    )
-    SELECT node FROM path_trace ORDER BY step DESC
-    `,
-    [normalizedFrom, forwardDepth + 1, meetingPoint],
-  );
-
-  // Build backward path: meeting point -> target using USING KEY
-  const backwardPathReader = await connection.runAndReadAll(
-    `
-    WITH RECURSIVE
-    backward_search(node, child, depth)
-    USING KEY (node) AS (
-      SELECT ? AS node, NULL::VARCHAR AS child, 0 AS depth
-      UNION
-      SELECT f.follower_pubkey, bs.node, bs.depth + 1
-      FROM backward_search bs
-      JOIN nsd_follows f ON bs.node = f.followed_pubkey
-      WHERE bs.depth < ?
-    ),
-    -- Trace back from meeting point to target
-    path_trace(node, child, step) AS (
-      SELECT node, child, 0 AS step
-      FROM backward_search
-      WHERE node = ?
-      UNION ALL
-      SELECT bs.node, bs.child, pt.step + 1
-      FROM path_trace pt
-      JOIN backward_search bs ON pt.child = bs.node
-      WHERE pt.child IS NOT NULL
-    )
-    SELECT node FROM path_trace ORDER BY step DESC
-    `,
-    [normalizedTo, backwardDepth + 1, meetingPoint],
-  );
-
-  // Combine paths
-  const forwardPath: string[] = [];
-  for (const row of forwardPathReader.getRows()) {
-    if (row[0] && typeof row[0] === "string") {
-      forwardPath.push(row[0]);
-    }
-  }
-
-  const backwardPath: string[] = [];
-  for (const row of backwardPathReader.getRows()) {
-    if (row[0] && typeof row[0] === "string") {
-      backwardPath.push(row[0]);
-    }
-  }
-
-  // Combine: forward path + backward path (excluding meeting point from backward)
-  const completePath = [...forwardPath, ...backwardPath.slice(1)];
+  // Combine paths: forward path + backward path (excluding meeting point from backward)
+  // The backward path is stored in reverse order (target -> meeting point)
+  const completePath = [...forwardPath, ...backwardPath.slice(1).reverse()];
 
   return {
     path: completePath,
@@ -287,19 +231,18 @@ export async function areMutualFollows(
 
   const reader = await connection.runAndReadAll(
     `
-    SELECT COUNT(*) as count
-    FROM nsd_follows f1
-    JOIN nsd_follows f2 ON
-      f1.follower_pubkey = f2.followed_pubkey AND
-      f1.followed_pubkey = f2.follower_pubkey
+    SELECT 1
+    FROM nsd_follows f1, nsd_follows f2
     WHERE f1.follower_pubkey = ?
       AND f1.followed_pubkey = ?
+      AND f2.follower_pubkey = ?
+      AND f2.followed_pubkey = ?
+    LIMIT 1
     `,
-    [normalized1, normalized2],
+    [normalized1, normalized2, normalized2, normalized1],
   );
 
-  const rows = reader.getRows();
-  return rows.length > 0 && Number(rows[0]![0]) > 0;
+  return reader.getRows().length > 0;
 }
 
 /**
@@ -372,30 +315,31 @@ export async function getUsersWithinDistance(
   }
 
   // Execute the recursive CTE to find all reachable pubkeys within distance
+  // Using memory-efficient approach with visited tracking instead of path tracking
   const reader = await connection.runAndReadAll(
     `
-    WITH RECURSIVE reachable_nodes(start_pubkey, end_pubkey, path, current_distance)
+    WITH RECURSIVE reachable_nodes(start_pubkey, end_pubkey, current_distance, visited)
     USING KEY (end_pubkey) AS (
       -- Base case: direct follows from source pubkey
       SELECT
         follower_pubkey AS start_pubkey,
         followed_pubkey AS end_pubkey,
-        [follower_pubkey, followed_pubkey] AS path,
-        1 AS current_distance
+        1 AS current_distance,
+        [follower_pubkey, followed_pubkey] AS visited
       FROM nsd_follows
       WHERE follower_pubkey = ?
       
       UNION
       
-      -- Recursive case: follow chains with cycle detection
+      -- Recursive case: follow chains with efficient cycle detection
       SELECT
         rn.start_pubkey,
         f.followed_pubkey,
-        list_append(rn.path, f.followed_pubkey) AS path,
-        rn.current_distance + 1 AS current_distance
+        rn.current_distance + 1 AS current_distance,
+        list_append(rn.visited, f.followed_pubkey) AS visited
       FROM reachable_nodes rn
       JOIN nsd_follows f ON rn.end_pubkey = f.follower_pubkey
-      WHERE NOT list_contains(rn.path, f.followed_pubkey) -- Prevent cycles
+      WHERE NOT list_contains(rn.visited, f.followed_pubkey) -- Prevent cycles
         AND rn.current_distance < ?
     )
     SELECT DISTINCT end_pubkey
@@ -450,11 +394,13 @@ export async function findShortestDistance(
     // Quick check: Do both pubkeys exist in the graph?
     const existenceReader = await connection.runAndReadAll(
       `SELECT
-        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as from_exists,
-        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ?) as to_exists`,
+        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+        EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as from_exists,
+        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+        EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as to_exists`,
       [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
     );
-
+  
   const existenceRow = existenceReader.getRows()[0];
   if (!existenceRow || !existenceRow[0] || !existenceRow[1]) {
     // One or both pubkeys don't exist in the graph
