@@ -56,32 +56,36 @@ export function parseKind3Event(event: NostrEvent): ParsedKind3Event {
   validateKind3Event(event);
 
   // Extract follow relationships from 'p' tags
-  const follows: FollowRelationship[] = event.tags
-    .filter((tag) => {
-      // Must be an array with at least 2 elements
-      if (!Array.isArray(tag) || tag.length < 2) {
-        return false;
-      }
+  const follows: FollowRelationship[] = [];
+  
+  // Optimized loop with minimal operations
+  for (let i = 0; i < event.tags.length; i++) {
+    const tag = event.tags[i];
+    
+    // Must be an array with at least 2 elements
+    if (!Array.isArray(tag) || tag.length < 2) {
+      continue;
+    }
 
-      // First element must be 'p'
-      if (tag[0] !== "p") {
-        return false;
-      }
+    // First element must be 'p'
+    if (tag[0] !== "p") {
+      continue;
+    }
 
-      // Second element (pubkey) must be a valid 64-character hex string
-      const followedPubkey = tag[1];
-      if (!isHexKey(followedPubkey)) {
-        return false;
-      }
+    // Second element (pubkey) must be a valid 64-character hex string
+    const followedPubkey = tag[1];
+    if (!isHexKey(followedPubkey)) {
+      continue;
+    }
 
-      return true;
-    })
-    .map((tag) => ({
+    // Add follow relationship
+    follows.push({
       follower_pubkey: event.pubkey,
-      followed_pubkey: tag[1]!.toLowerCase(), // Normalize to lowercase
+      followed_pubkey: followedPubkey.toLowerCase(), // Normalize to lowercase
       event_id: event.id,
       created_at: event.created_at,
-    }));
+    });
+  }
 
   return {
     follows,

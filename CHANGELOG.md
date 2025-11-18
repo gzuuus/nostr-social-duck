@@ -1,5 +1,19 @@
 # nostr-social-duck
 
+## 0.1.7
+
+### Patch Changes
+
+- perf(db): optimize ingestion with batching and transactions
+
+  This commit significantly improves the performance of social graph ingestion by implementing batch processing, bulk operations, and transaction safety. Key improvements include:
+  - Batch processing of events to handle large datasets efficiently
+  - Bulk delete operations for faster follow relationship updates
+  - Transaction wrapping for data integrity during ingestion
+  - Optimized deduplication using Set instead of Map
+  - Faster hex key validation utilities
+  - Database reorganization (moved from examples/ to data/)
+
 ## 0.1.6
 
 ### Patch Changes

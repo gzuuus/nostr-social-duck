@@ -19,7 +19,7 @@ async function main() {
   // Create an in-memory analyzer with reasonable maxDepth for demo
   console.log("Creating analyzer...");
   const analyzer = await DuckDBSocialGraphAnalyzer.create({
-    dbPath: "examples/social-graph.db",
+    dbPath: "data/social-graph.db",
   });
 
   try {
@@ -37,9 +37,9 @@ async function main() {
     console.log(`Found ${events.length} events\n`);
 
     // // Ingest all events
-    // console.log("Ingesting events into the graph...");
-    // await analyzer.ingestEvents(events);
-    // console.log("✓ Events ingested successfully\n");
+    console.log("Ingesting events into the graph...");
+    await analyzer.ingestEvents(events);
+    console.log("✓ Events ingested successfully\n");
 
     // Get and display statistics
     console.log("Graph Statistics:");

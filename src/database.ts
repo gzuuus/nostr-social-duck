@@ -48,11 +48,13 @@ export async function initializeDatabase(
  * @param connection - Active DuckDB connection
  */
 export async function setupSchema(connection: DuckDBConnection): Promise<void> {
-  // Create the follows table
-  await connection.run(CREATE_FOLLOWS_TABLE);
-
-  // Create indexes for performance
-  await connection.run(CREATE_INDEXES);
+  // Create table and indexes in a single transaction
+  await connection.run(`
+    BEGIN TRANSACTION;
+    ${CREATE_FOLLOWS_TABLE}
+    ${CREATE_INDEXES}
+    COMMIT;
+  `);
 }
 
 /**
