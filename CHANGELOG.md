@@ -1,5 +1,16 @@
 # nostr-social-duck
 
+## 0.1.12
+
+### Patch Changes
+
+- fix: remove CHECKPOINT from ingestion to prevent transaction conflicts
+  - Remove CHECKPOINT operation from ingestEvents() function
+  - Ensure CHECKPOINT only runs in close() method when we own the connection
+  - Add documentation explaining CHECKPOINT behavior for external connections
+  - Fixes "Cannot CHECKPOINT: there are other write transactions active" errors
+  - Improves integration compatibility with external projects using connect()
+
 ## 0.1.11
 
 ### Patch Changes

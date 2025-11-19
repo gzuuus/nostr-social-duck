@@ -156,13 +156,6 @@ export async function ingestEvents(
   console.log(
     `Ingestion completed: ${latestEventsByPubkey.size} events processed`,
   );
-
-  // Reclaim space after deletions to prevent database file growth
-  // CHECKPOINT writes all changes to disk and helps with space reclamation
-  await connection.run("CHECKPOINT");
-
-  // Note: VACUUM in DuckDB doesn't reclaim space like in other databases
-  // The main space reclamation happens through CHECKPOINT
 }
 
 /**

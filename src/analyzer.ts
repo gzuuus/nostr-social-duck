@@ -553,8 +553,10 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
       await this.clearRootDistances();
     }
 
-    // Reclaim space before closing
-    if (this.connection) {
+    // Reclaim space before closing - only when we own the connection
+    // CHECKPOINT is only called when we created the database instance ourselves
+    // to avoid conflicts with other transactions in external projects
+    if (this.connection && this.instance) {
       await this.connection.run("CHECKPOINT");
     }
 
