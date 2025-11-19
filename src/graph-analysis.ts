@@ -106,10 +106,12 @@ export async function findShortestPath(
     USING KEY (node) AS (
       SELECT ? AS node, NULL::VARCHAR AS parent, 0 AS depth, [?] AS path
       UNION
-      SELECT f.followed_pubkey, fs.node, fs.depth + 1, list_append(fs.path, f.followed_pubkey)
+      SELECT DISTINCT f.followed_pubkey, fs.node, fs.depth + 1, list_append(fs.path, f.followed_pubkey)
       FROM forward_search fs
       JOIN nsd_follows f ON fs.node = f.follower_pubkey
+      LEFT JOIN recurring.forward_search visited ON f.followed_pubkey = visited.node
       WHERE fs.depth < ?
+        AND visited.node IS NULL
         AND NOT list_contains(fs.path, f.followed_pubkey) -- Prevent cycles
     ),
     -- Backward search: limited depth with path tracking
@@ -117,10 +119,12 @@ export async function findShortestPath(
     USING KEY (node) AS (
       SELECT ? AS node, NULL::VARCHAR AS child, 0 AS depth, [?] AS path
       UNION
-      SELECT f.follower_pubkey, bs.node, bs.depth + 1, list_append(bs.path, f.follower_pubkey)
+      SELECT DISTINCT f.follower_pubkey, bs.node, bs.depth + 1, list_append(bs.path, f.follower_pubkey)
       FROM backward_search bs
       JOIN nsd_follows f ON bs.node = f.followed_pubkey
+      LEFT JOIN recurring.backward_search visited ON f.follower_pubkey = visited.node
       WHERE bs.depth < ?
+        AND visited.node IS NULL
         AND NOT list_contains(bs.path, f.follower_pubkey) -- Prevent cycles
     ),
     -- Find first intersection point with complete path reconstruction
@@ -318,14 +322,13 @@ export async function getUsersWithinDistance(
   // Using memory-efficient approach with visited tracking instead of path tracking
   const reader = await connection.runAndReadAll(
     `
-    WITH RECURSIVE reachable_nodes(start_pubkey, end_pubkey, current_distance, visited)
+    WITH RECURSIVE reachable_nodes(start_pubkey, end_pubkey, current_distance)
     USING KEY (end_pubkey) AS (
       -- Base case: direct follows from source pubkey
       SELECT
         follower_pubkey AS start_pubkey,
         followed_pubkey AS end_pubkey,
-        1 AS current_distance,
-        [follower_pubkey, followed_pubkey] AS visited
+        1 AS current_distance
       FROM nsd_follows
       WHERE follower_pubkey = ?
       
@@ -335,12 +338,12 @@ export async function getUsersWithinDistance(
       SELECT
         rn.start_pubkey,
         f.followed_pubkey,
-        rn.current_distance + 1 AS current_distance,
-        list_append(rn.visited, f.followed_pubkey) AS visited
+        rn.current_distance + 1 AS current_distance
       FROM reachable_nodes rn
       JOIN nsd_follows f ON rn.end_pubkey = f.follower_pubkey
-      WHERE NOT list_contains(rn.visited, f.followed_pubkey) -- Prevent cycles
-        AND rn.current_distance < ?
+      LEFT JOIN recurring.reachable_nodes visited ON f.followed_pubkey = visited.end_pubkey
+      WHERE rn.current_distance < ?
+        AND visited.end_pubkey IS NULL
     )
     SELECT DISTINCT end_pubkey
     FROM reachable_nodes
@@ -361,6 +364,177 @@ export async function getUsersWithinDistance(
   }
 
   return pubkeys;
+}
+
+/**
+ * Builds a temporary table with pre-calculated distances from a root pubkey
+ *
+ * @param connection - Active DuckDB connection
+ * @param rootPubkey - The root pubkey
+ * @param maxDepth - Maximum depth to traverse
+ */
+export async function buildRootDistancesTable(
+  connection: DuckDBConnection,
+  rootPubkey: string,
+  maxDepth: number,
+): Promise<void> {
+  const normalizedRoot = normalizePubkey(rootPubkey);
+
+  // Create temporary table for O(1) lookups using optimized BFS
+  // We use CREATE OR REPLACE to handle updates efficiently
+  await connection.run(
+    `
+    CREATE OR REPLACE TEMPORARY TABLE nsd_root_distances AS
+    WITH RECURSIVE bfs(pubkey, distance)
+    USING KEY (pubkey) AS (
+      -- Base case: root node
+      SELECT ?::VARCHAR AS pubkey, 0 AS distance
+      UNION
+      -- Recursive step
+      SELECT DISTINCT
+        f.followed_pubkey AS pubkey,
+        bfs.distance + 1 AS distance
+      FROM bfs
+      JOIN nsd_follows f ON bfs.pubkey = f.follower_pubkey
+      LEFT JOIN recurring.bfs visited ON f.followed_pubkey = visited.pubkey
+      WHERE bfs.distance < ?
+        AND visited.pubkey IS NULL
+    )
+    SELECT pubkey, distance FROM bfs
+    `,
+    [normalizedRoot, maxDepth],
+  );
+
+  // Create index for fast lookups
+  await connection.run(`
+    CREATE INDEX IF NOT EXISTS idx_root_distances ON nsd_root_distances(pubkey)
+  `);
+}
+
+/**
+ * Gets the distance from the root pubkey to a target pubkey using the pre-calculated table
+ *
+ * @param connection - Active DuckDB connection
+ * @param targetPubkey - The target pubkey
+ * @returns Promise resolving to distance or null
+ */
+export async function getDistanceFromRoot(
+  connection: DuckDBConnection,
+  targetPubkey: string,
+): Promise<number | null> {
+  const normalizedTarget = normalizePubkey(targetPubkey);
+
+  const reader = await connection.runAndReadAll(
+    `
+    SELECT distance
+    FROM nsd_root_distances
+    WHERE pubkey = ?
+    LIMIT 1
+    `,
+    [normalizedTarget],
+  );
+
+  const rows = reader.getRows();
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return Number(rows[0]![0]);
+}
+
+/**
+ * Gets all users exactly at a specific distance from the root pubkey using the pre-calculated table
+ *
+ * @param connection - Active DuckDB connection
+ * @param distance - The exact distance in hops
+ * @returns Promise resolving to array of pubkeys
+ */
+export async function getUsersAtDistanceFromRoot(
+  connection: DuckDBConnection,
+  distance: number,
+): Promise<string[]> {
+  const reader = await connection.runAndReadAll(
+    `
+    SELECT pubkey
+    FROM nsd_root_distances
+    WHERE distance = ?
+    `,
+    [distance],
+  );
+
+  const rows = reader.getRows();
+  const pubkeys: string[] = [];
+  
+  for (const row of rows) {
+    if (row[0] && typeof row[0] === "string") {
+      pubkeys.push(row[0]);
+    }
+  }
+
+  return pubkeys;
+}
+
+/**
+ * Gets all users within a specific distance from the root pubkey using the pre-calculated table
+ *
+ * @param connection - Active DuckDB connection
+ * @param distance - The maximum distance in hops
+ * @returns Promise resolving to array of pubkeys
+ */
+export async function getUsersWithinDistanceFromRoot(
+  connection: DuckDBConnection,
+  distance: number,
+): Promise<string[]> {
+  const reader = await connection.runAndReadAll(
+    `
+    SELECT pubkey
+    FROM nsd_root_distances
+    WHERE distance <= ? AND distance > 0
+    `,
+    [distance],
+  );
+
+  const rows = reader.getRows();
+  const pubkeys: string[] = [];
+  
+  for (const row of rows) {
+    if (row[0] && typeof row[0] === "string") {
+      pubkeys.push(row[0]);
+    }
+  }
+
+  return pubkeys;
+}
+
+/**
+ * Gets the distribution of users by distance from the root pubkey
+ *
+ * @param connection - Active DuckDB connection
+ * @returns Promise resolving to a map of distance -> count
+ */
+export async function getRootDistanceDistribution(
+  connection: DuckDBConnection,
+): Promise<Record<number, number>> {
+  const reader = await connection.runAndReadAll(
+    `
+    SELECT distance, COUNT(*) as count
+    FROM nsd_root_distances
+    WHERE distance > 0
+    GROUP BY distance
+    ORDER BY distance
+    `,
+  );
+
+  const rows = reader.getRows();
+  const distribution: Record<number, number> = {};
+  
+  for (const row of rows) {
+    const distance = Number(row[0]);
+    const count = Number(row[1]);
+    distribution[distance] = count;
+  }
+
+  return distribution;
 }
 
 /**
@@ -448,20 +622,24 @@ export async function findShortestDistance(
     USING KEY (node) AS (
       SELECT ? AS node, NULL::VARCHAR AS parent, 0 AS depth
       UNION
-      SELECT f.followed_pubkey, fs.node, fs.depth + 1
+      SELECT DISTINCT f.followed_pubkey, fs.node, fs.depth + 1
       FROM forward_search fs
       JOIN nsd_follows f ON fs.node = f.follower_pubkey
+      LEFT JOIN recurring.forward_search visited ON f.followed_pubkey = visited.node
       WHERE fs.depth < ?
+        AND visited.node IS NULL
     ),
     -- Backward search: limited depth
     backward_search(node, child, depth)
     USING KEY (node) AS (
       SELECT ? AS node, NULL::VARCHAR AS child, 0 AS depth
       UNION
-      SELECT f.follower_pubkey, bs.node, bs.depth + 1
+      SELECT DISTINCT f.follower_pubkey, bs.node, bs.depth + 1
       FROM backward_search bs
       JOIN nsd_follows f ON bs.node = f.followed_pubkey
+      LEFT JOIN recurring.backward_search visited ON f.follower_pubkey = visited.node
       WHERE bs.depth < ?
+        AND visited.node IS NULL
     ),
     -- Find first intersection point
     intersection AS (

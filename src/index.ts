@@ -47,6 +47,11 @@ export {
   getPubkeyDegree,
   getUsersWithinDistance,
   getAllUniquePubkeys,
+  buildRootDistancesTable,
+  getDistanceFromRoot,
+  getUsersAtDistanceFromRoot,
+  getUsersWithinDistanceFromRoot,
+  getRootDistanceDistribution,
 } from "./graph-analysis.js";
 
 // Ingestion utilities (for advanced usage)

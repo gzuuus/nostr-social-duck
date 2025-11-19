@@ -1,5 +1,16 @@
 # nostr-social-duck
 
+## 0.1.11
+
+### Patch Changes
+
+- feat: add root pubkey optimization for O(1) distance lookups
+  - Add `setRootPubkey()` method for pre-computing distances
+  - Add `getUsersAtDistance()` and `getDistanceDistribution()` statistical methods
+  - Optimize `getShortestDistance()` with O(1) lookups when querying from root
+  - Add comprehensive tests and performance benchmarks
+  - Update documentation with new optimization features
+
 ## 0.1.10
 
 ### Patch Changes

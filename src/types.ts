@@ -62,6 +62,8 @@ export interface SocialGraphConfig {
   dbPath?: string;
   /** Maximum depth for shortest path searches (default: 6) */
   maxDepth?: number;
+  /** Root pubkey for optimized distance calculations (optional) */
+  rootPubkey?: string;
 }
 
 /**
@@ -153,6 +155,64 @@ export interface SocialGraphAnalyzer {
    * @returns Promise resolving to true if the pubkey exists
    */
   pubkeyExists(pubkey: string): Promise<boolean>;
+
+  /**
+   * Check if a direct follow relationship exists between two pubkeys
+   * @param followerPubkey - The follower pubkey
+   * @param followedPubkey - The followed pubkey
+   * @returns Promise resolving to true if the relationship exists
+   */
+  isDirectFollow(
+    followerPubkey: string,
+    followedPubkey: string,
+  ): Promise<boolean>;
+
+  /**
+   * Check if two pubkeys mutually follow each other
+   * @param pubkey1 - First pubkey
+   * @param pubkey2 - Second pubkey
+   * @returns Promise resolving to true if they mutually follow each other
+   */
+  areMutualFollows(pubkey1: string, pubkey2: string): Promise<boolean>;
+
+  /**
+   * Get the degree (number of follows) for a pubkey
+   * @param pubkey - The pubkey to check
+   * @returns Promise resolving to object with outDegree (following) and inDegree (followers)
+   */
+  getPubkeyDegree(
+    pubkey: string,
+  ): Promise<{ outDegree: number; inDegree: number }>;
+
+  /**
+   * Sets the root pubkey for optimized distance calculations.
+   *
+   * This pre-calculates distances from the root pubkey to all other nodes
+   * using a temporary table, making subsequent getShortestDistance calls
+   * from this pubkey extremely fast (O(1)).
+   *
+   * @param pubkey - The root pubkey to optimize for
+   */
+  setRootPubkey(pubkey: string): Promise<void>;
+
+  /**
+   * Gets the currently configured root pubkey
+   * @returns The root pubkey or null if not set
+   */
+  getRootPubkey(): string | null;
+
+  /**
+   * Get all users exactly at a specific distance from the root pubkey
+   * @param distance - The exact distance in hops
+   * @returns Promise resolving to array of pubkeys
+   */
+  getUsersAtDistance(distance: number): Promise<string[]>;
+
+  /**
+   * Get the distribution of users by distance from the root pubkey
+   * @returns Promise resolving to a map of distance -> count
+   */
+  getDistanceDistribution(): Promise<Record<number, number>>;
 
   /**
    * Close the database connection

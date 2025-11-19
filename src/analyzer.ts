@@ -25,7 +25,16 @@ import {
   findShortestDistance,
   getUsersWithinDistance,
   getAllUniquePubkeys,
+  buildRootDistancesTable,
+  getDistanceFromRoot,
+  isDirectFollow,
+  areMutualFollows,
+  getPubkeyDegree,
+  getUsersAtDistanceFromRoot,
+  getUsersWithinDistanceFromRoot,
+  getRootDistanceDistribution,
 } from "./graph-analysis.js";
+import { normalizePubkey } from "./parser.js";
 
 /**
  * DuckDB-based Social Graph Analyzer for Nostr Kind 3 events
@@ -53,6 +62,8 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   private connection: DuckDBConnection | null = null;
   private maxDepth: number;
   private closed: boolean = false;
+  private rootPubkey: string | null = null;
+  private rootTableValid: boolean = false;
 
   /**
    * Private constructor - use static create() or connect() methods instead
@@ -87,7 +98,7 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   static async create(
     config: SocialGraphConfig = {},
   ): Promise<DuckDBSocialGraphAnalyzer> {
-    const { dbPath = ":memory:", maxDepth = 6 } = config;
+    const { dbPath = ":memory:", maxDepth = 6, rootPubkey } = config;
 
     // Initialize database
     const instance = await initializeDatabase(dbPath);
@@ -98,6 +109,11 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     // Get connection and setup schema
     await analyzer.ensureConnection();
     await setupSchema(analyzer.connection!);
+
+    // Set root pubkey if provided
+    if (rootPubkey) {
+      await analyzer.setRootPubkey(rootPubkey);
+    }
 
     return analyzer;
   }
@@ -125,12 +141,18 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   static async connect(
     connection: DuckDBConnection,
     maxDepth: number = 6,
+    rootPubkey?: string,
   ): Promise<DuckDBSocialGraphAnalyzer> {
     // Create analyzer instance with external connection
     const analyzer = new DuckDBSocialGraphAnalyzer(null, connection, maxDepth);
 
     // Setup schema on the external connection
     await setupSchema(connection);
+
+    // Set root pubkey if provided
+    if (rootPubkey) {
+      await analyzer.setRootPubkey(rootPubkey);
+    }
 
     return analyzer;
   }
@@ -179,6 +201,11 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   async ingestEvent(event: NostrEvent): Promise<void> {
     await this.ensureConnection();
     await ingestSingleEvent(this.connection!, event);
+
+    // Mark root table as invalid since the graph has changed
+    if (this.rootPubkey) {
+      this.rootTableValid = false;
+    }
   }
 
   /**
@@ -198,6 +225,11 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   async ingestEvents(events: NostrEvent[]): Promise<void> {
     await this.ensureConnection();
     await ingestMultipleEvents(this.connection!, events);
+
+    // Mark root table as invalid since the graph has changed
+    if (this.rootPubkey) {
+      this.rootTableValid = false;
+    }
   }
 
   /**
@@ -264,6 +296,23 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   ): Promise<number | null> {
     await this.ensureConnection();
     const depth = maxDepth ?? this.maxDepth;
+    const normalizedFrom = normalizePubkey(fromPubkey);
+
+    // If fromPubkey matches the rootPubkey, use the optimized path
+    if (this.rootPubkey && normalizedFrom === this.rootPubkey) {
+      // Rebuild table if invalid
+      if (!this.rootTableValid) {
+        await buildRootDistancesTable(
+          this.connection!,
+          this.rootPubkey,
+          this.maxDepth,
+        );
+        this.rootTableValid = true;
+      }
+      return getDistanceFromRoot(this.connection!, toPubkey);
+    }
+
+    // Otherwise, use the standard bidirectional search
     return findShortestDistance(this.connection!, fromPubkey, toPubkey, depth);
   }
 
@@ -292,7 +341,79 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     distance: number,
   ): Promise<string[] | null> {
     await this.ensureConnection();
+    const normalizedFrom = normalizePubkey(fromPubkey);
+
+    // Hybrid approach: Use optimized table if querying from root pubkey
+    if (this.rootPubkey && normalizedFrom === this.rootPubkey) {
+      // Rebuild table if invalid
+      if (!this.rootTableValid) {
+        await buildRootDistancesTable(
+          this.connection!,
+          this.rootPubkey,
+          this.maxDepth,
+        );
+        this.rootTableValid = true;
+      }
+      return getUsersWithinDistanceFromRoot(this.connection!, distance);
+    }
+
+    // Fallback to standard recursive CTE for other pubkeys
     return getUsersWithinDistance(this.connection!, fromPubkey, distance);
+  }
+
+  /**
+   * Get all users exactly at a specific distance from the root pubkey
+   *
+   * This method requires a root pubkey to be set.
+   *
+   * @param distance - The exact distance in hops
+   * @returns Promise resolving to array of pubkeys
+   */
+  async getUsersAtDistance(distance: number): Promise<string[]> {
+    await this.ensureConnection();
+
+    if (!this.rootPubkey) {
+      throw new Error("Root pubkey must be set to use getUsersAtDistance");
+    }
+
+    // Rebuild table if invalid
+    if (!this.rootTableValid) {
+      await buildRootDistancesTable(
+        this.connection!,
+        this.rootPubkey,
+        this.maxDepth,
+      );
+      this.rootTableValid = true;
+    }
+
+    return getUsersAtDistanceFromRoot(this.connection!, distance);
+  }
+
+  /**
+   * Get the distribution of users by distance from the root pubkey
+   *
+   * This method requires a root pubkey to be set.
+   *
+   * @returns Promise resolving to a map of distance -> count
+   */
+  async getDistanceDistribution(): Promise<Record<number, number>> {
+    await this.ensureConnection();
+
+    if (!this.rootPubkey) {
+      throw new Error("Root pubkey must be set to use getDistanceDistribution");
+    }
+
+    // Rebuild table if invalid
+    if (!this.rootTableValid) {
+      await buildRootDistancesTable(
+        this.connection!,
+        this.rootPubkey,
+        this.maxDepth,
+      );
+      this.rootTableValid = true;
+    }
+
+    return getRootDistanceDistribution(this.connection!);
   }
 
   /**
@@ -349,6 +470,70 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   }
 
   /**
+   * Checks if a direct follow relationship exists between two pubkeys
+   *
+   * @param followerPubkey - The follower pubkey
+   * @param followedPubkey - The followed pubkey
+   * @returns Promise resolving to true if the relationship exists
+   *
+   * @example
+   * ```typescript
+   * const isFollowing = await analyzer.isDirectFollow(
+   *   "followerPubkey...",
+   *   "followedPubkey..."
+   * );
+   * console.log(`Direct follow exists: ${isFollowing}`);
+   * ```
+   */
+  async isDirectFollow(
+    followerPubkey: string,
+    followedPubkey: string,
+  ): Promise<boolean> {
+    await this.ensureConnection();
+    return isDirectFollow(this.connection!, followerPubkey, followedPubkey);
+  }
+
+  /**
+   * Checks if two pubkeys mutually follow each other
+   *
+   * @param pubkey1 - First pubkey
+   * @param pubkey2 - Second pubkey
+   * @returns Promise resolving to true if they mutually follow each other
+   *
+   * @example
+   * ```typescript
+   * const areMutual = await analyzer.areMutualFollows(
+   *   "pubkey1...",
+   *   "pubkey2..."
+   * );
+   * console.log(`Mutual follows: ${areMutual}`);
+   * ```
+   */
+  async areMutualFollows(pubkey1: string, pubkey2: string): Promise<boolean> {
+    await this.ensureConnection();
+    return areMutualFollows(this.connection!, pubkey1, pubkey2);
+  }
+
+  /**
+   * Gets the degree (number of follows) for a pubkey
+   *
+   * @param pubkey - The pubkey to check
+   * @returns Promise resolving to object with outDegree (following) and inDegree (followers)
+   *
+   * @example
+   * ```typescript
+   * const degree = await analyzer.getPubkeyDegree("pubkey123...");
+   * console.log(`Following: ${degree.outDegree}, Followers: ${degree.inDegree}`);
+   * ```
+   */
+  async getPubkeyDegree(
+    pubkey: string,
+  ): Promise<{ outDegree: number; inDegree: number }> {
+    await this.ensureConnection();
+    return getPubkeyDegree(this.connection!, pubkey);
+  }
+
+  /**
    * Closes the database connection and cleans up resources
    *
    * After calling this method, the analyzer cannot be used anymore.
@@ -361,6 +546,11 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   async close(): Promise<void> {
     if (this.closed) {
       return;
+    }
+
+    // Clear the root distances table
+    if (this.rootPubkey) {
+      await this.clearRootDistances();
     }
 
     // Reclaim space before closing
@@ -405,5 +595,56 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
       throw new Error("maxDepth must be at least 1");
     }
     this.maxDepth = maxDepth;
+  }
+
+  /**
+   * Sets the root pubkey for optimized distance calculations.
+   *
+   * This pre-calculates distances from the root pubkey to all other nodes
+   * using a temporary table, making subsequent getShortestDistance calls
+   * from this pubkey extremely fast (O(1)).
+   *
+   * @param pubkey - The root pubkey to optimize for
+   */
+  async setRootPubkey(pubkey: string): Promise<void> {
+    await this.ensureConnection();
+    const normalizedPubkey = normalizePubkey(pubkey);
+    this.rootPubkey = normalizedPubkey;
+
+    // Build the temporary table with pre-calculated distances
+    await buildRootDistancesTable(
+      this.connection!,
+      normalizedPubkey,
+      this.maxDepth,
+    );
+    this.rootTableValid = true;
+  }
+
+  /**
+   * Gets the currently configured root pubkey
+   *
+   * @returns The root pubkey or null if not set
+   */
+  getRootPubkey(): string | null {
+    return this.rootPubkey;
+  }
+
+  /**
+   * Clears the temporary root distances table
+   * @private
+   */
+  private async clearRootDistances(): Promise<void> {
+    if (this.connection) {
+      try {
+        await this.connection.run(`
+          DROP TABLE IF EXISTS nsd_root_distances
+        `);
+      } catch (error) {
+        console.error("Error clearing root distances table:", error);
+        // Ignore errors if table doesn't exist
+      }
+    }
+    this.rootPubkey = null;
+    this.rootTableValid = false;
   }
 }

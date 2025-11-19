@@ -9,6 +9,7 @@ A high-performance TypeScript library for analyzing Nostr social graphs using Du
 - 🔄 **NIP-02 Compliant** - Properly implements "latest event wins" semantics
 - 💾 **Flexible Storage** - In-memory or persistent database options
 - 🎯 **Type-Safe** - Full TypeScript support with comprehensive types
+- ⚡ **Root Pubkey Optimization** - Pre-computed distances for O(1) lookups
 
 ## Installation
 
@@ -177,6 +178,19 @@ const distance = await analyzer.getShortestDistance(
 );
 // Returns: number | null - distance in hops, or null if no path exists
 // Note: This is 2-3x faster than getShortestPath for multi-hop paths
+
+// Root pubkey optimization for high-frequency queries
+await analyzer.setRootPubkey("your_pubkey..."); // Pre-compute distances
+const rootDistance = await analyzer.getShortestDistance(
+  "your_pubkey...",
+  "target_pubkey...",
+); // O(1) lookup
+
+// Get users at specific distance from root
+const usersAtDistance = await analyzer.getUsersAtDistance(2); // All users exactly 2 hops away
+
+// Get distance distribution from root
+const distribution = await analyzer.getDistanceDistribution(); // {1: 150, 2: 2500, ...}
 ```
 
 ## Data Model
