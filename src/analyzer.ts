@@ -158,7 +158,7 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   }
 
   /**
-   * Ensures a database connection is available
+   * Ensures a database connection is available and valid
    * @private
    */
   private async ensureConnection(): Promise<void> {
@@ -173,6 +173,25 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
         );
       }
       this.connection = await this.instance.connect();
+    }
+
+    // Validate connection by running a simple query
+    try {
+      await this.connection.run("SELECT 1");
+    } catch (error) {
+      // Connection is invalid, try to reconnect if we own the instance
+      console.error("Database connection is invalid:", error);
+      if (this.instance) {
+        try {
+          this.connection.closeSync();
+        } catch {
+          // Ignore close errors
+        }
+        this.connection = await this.instance.connect();
+      } else {
+        // External connection - rethrow the error
+        throw new Error("Database connection is invalid");
+      }
     }
   }
 
