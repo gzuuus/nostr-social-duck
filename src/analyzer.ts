@@ -35,27 +35,13 @@ import {
   getRootDistanceDistribution,
 } from "./graph-analysis.js";
 import { normalizePubkey } from "./parser.js";
+import { executeWithRetry } from "./utils.js";
 
 /**
  * DuckDB-based Social Graph Analyzer for Nostr Kind 3 events
  *
  * This class provides the main API for analyzing social graphs from Nostr follow lists.
  * It uses DuckDB for efficient graph traversal and analysis.
- *
- * @example
- * ```typescript
- * // Create an in-memory analyzer
- * const analyzer = await DuckDBSocialGraphAnalyzer.create();
- *
- * // Ingest events
- * await analyzer.ingestEvents(kind3Events);
- *
- * // Find shortest path
- * const path = await analyzer.getShortestPath(fromPubkey, toPubkey);
- *
- * // Clean up
- * await analyzer.close();
- * ```
  */
 export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   private instance: DuckDBInstance | null = null;
@@ -174,25 +160,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
       }
       this.connection = await this.instance.connect();
     }
-
-    // Validate connection by running a simple query
-    try {
-      await this.connection.run("SELECT 1");
-    } catch (error) {
-      // Connection is invalid, try to reconnect if we own the instance
-      console.error("Database connection is invalid:", error);
-      if (this.instance) {
-        try {
-          this.connection.closeSync();
-        } catch {
-          // Ignore close errors
-        }
-        this.connection = await this.instance.connect();
-      } else {
-        // External connection - rethrow the error
-        throw new Error("Database connection is invalid");
-      }
-    }
   }
 
   /**
@@ -200,22 +167,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    *
    * @param event - The Nostr Kind 3 event to ingest
    * @throws Error if the event is invalid or the analyzer is closed
-   *
-   * @example
-   * ```typescript
-   * await analyzer.ingestEvent({
-   *   id: "event123...",
-   *   pubkey: "pubkey123...",
-   *   kind: 3,
-   *   created_at: 1234567890,
-   *   tags: [
-   *     ["p", "followed_pubkey1..."],
-   *     ["p", "followed_pubkey2..."]
-   *   ],
-   *   content: "",
-   *   sig: "signature..."
-   * });
-   * ```
    */
   async ingestEvent(event: NostrEvent): Promise<void> {
     await this.ensureConnection();
@@ -576,7 +527,9 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     // CHECKPOINT is only called when we created the database instance ourselves
     // to avoid conflicts with other transactions in external projects
     if (this.connection && this.instance) {
-      await this.connection.run("CHECKPOINT");
+      await executeWithRetry(async () => {
+        await this.connection!.run("CHECKPOINT");
+      });
     }
 
     // Only close connection if we own it (created via create(), not connect())
@@ -657,9 +610,11 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   private async clearRootDistances(): Promise<void> {
     if (this.connection) {
       try {
-        await this.connection.run(`
-          DROP TABLE IF EXISTS nsd_root_distances
-        `);
+        await executeWithRetry(async () => {
+          await this.connection!.run(`
+            DROP TABLE IF EXISTS nsd_root_distances
+          `);
+        });
       } catch (error) {
         console.error("Error clearing root distances table:", error);
         // Ignore errors if table doesn't exist

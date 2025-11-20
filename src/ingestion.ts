@@ -20,10 +20,12 @@ async function bulkDeleteFollows(
 
   // Use a single query with IN clause for bulk deletion
   const placeholders = pubkeys.map(() => "?").join(", ");
-  await connection.run(
-    `DELETE FROM nsd_follows WHERE follower_pubkey IN (${placeholders})`,
-    pubkeys,
-  );
+  await executeWithRetry(async () => {
+    await connection.run(
+      `DELETE FROM nsd_follows WHERE follower_pubkey IN (${placeholders})`,
+      pubkeys,
+    );
+  });
 }
 
 /**
@@ -260,7 +262,9 @@ export async function deleteFollowsForPubkey(
   connection: DuckDBConnection,
   pubkey: string,
 ): Promise<void> {
-  await connection.run("DELETE FROM nsd_follows WHERE follower_pubkey = ?", [
-    pubkey,
-  ]);
+  await executeWithRetry(async () => {
+    await connection.run("DELETE FROM nsd_follows WHERE follower_pubkey = ?", [
+      pubkey,
+    ]);
+  });
 }

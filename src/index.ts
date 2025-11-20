@@ -60,3 +60,6 @@ export {
   ingestEvents,
   deleteFollowsForPubkey,
 } from "./ingestion.js";
+
+// Utility functions
+export { executeWithRetry, isHex, isHexKey } from "./utils.js";

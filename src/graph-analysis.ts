@@ -203,21 +203,23 @@ export async function isDirectFollow(
   followerPubkey: string,
   followedPubkey: string,
 ): Promise<boolean> {
-  const normalizedFollower = normalizePubkey(followerPubkey);
-  const normalizedFollowed = normalizePubkey(followedPubkey);
+  return executeWithRetry(async () => {
+    const normalizedFollower = normalizePubkey(followerPubkey);
+    const normalizedFollowed = normalizePubkey(followedPubkey);
 
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT 1
-    FROM nsd_follows
-    WHERE follower_pubkey = ?
-      AND followed_pubkey = ?
-    LIMIT 1
-    `,
-    [normalizedFollower, normalizedFollowed],
-  );
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT 1
+      FROM nsd_follows
+      WHERE follower_pubkey = ?
+        AND followed_pubkey = ?
+      LIMIT 1
+      `,
+      [normalizedFollower, normalizedFollowed],
+    );
 
-  return reader.getRows().length > 0;
+    return reader.getRows().length > 0;
+  });
 }
 
 /**
@@ -233,23 +235,25 @@ export async function areMutualFollows(
   pubkey1: string,
   pubkey2: string,
 ): Promise<boolean> {
-  const normalized1 = normalizePubkey(pubkey1);
-  const normalized2 = normalizePubkey(pubkey2);
+  return executeWithRetry(async () => {
+    const normalized1 = normalizePubkey(pubkey1);
+    const normalized2 = normalizePubkey(pubkey2);
 
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT 1
-    FROM nsd_follows f1, nsd_follows f2
-    WHERE f1.follower_pubkey = ?
-      AND f1.followed_pubkey = ?
-      AND f2.follower_pubkey = ?
-      AND f2.followed_pubkey = ?
-    LIMIT 1
-    `,
-    [normalized1, normalized2, normalized2, normalized1],
-  );
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT 1
+      FROM nsd_follows f1, nsd_follows f2
+      WHERE f1.follower_pubkey = ?
+        AND f1.followed_pubkey = ?
+        AND f2.follower_pubkey = ?
+        AND f2.followed_pubkey = ?
+      LIMIT 1
+      `,
+      [normalized1, normalized2, normalized2, normalized1],
+    );
 
-  return reader.getRows().length > 0;
+    return reader.getRows().length > 0;
+  });
 }
 
 /**
@@ -263,27 +267,29 @@ export async function getPubkeyDegree(
   connection: DuckDBConnection,
   pubkey: string,
 ): Promise<{ outDegree: number; inDegree: number }> {
-  const normalized = normalizePubkey(pubkey);
+  return executeWithRetry(async () => {
+    const normalized = normalizePubkey(pubkey);
 
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT
-      (SELECT COUNT(*) FROM nsd_follows WHERE follower_pubkey = ?) as out_degree,
-      (SELECT COUNT(*) FROM nsd_follows WHERE followed_pubkey = ?) as in_degree
-    `,
-    [normalized, normalized],
-  );
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT
+        (SELECT COUNT(*) FROM nsd_follows WHERE follower_pubkey = ?) as out_degree,
+        (SELECT COUNT(*) FROM nsd_follows WHERE followed_pubkey = ?) as in_degree
+      `,
+      [normalized, normalized],
+    );
 
-  const rows = reader.getRows();
-  if (rows.length === 0) {
-    return { outDegree: 0, inDegree: 0 };
-  }
+    const rows = reader.getRows();
+    if (rows.length === 0) {
+      return { outDegree: 0, inDegree: 0 };
+    }
 
-  const row = rows[0]!;
-  return {
-    outDegree: Number(row[0]),
-    inDegree: Number(row[1]),
-  };
+    const row = rows[0]!;
+    return {
+      outDegree: Number(row[0]),
+      inDegree: Number(row[1]),
+    };
+  });
 }
 
 /**
@@ -430,24 +436,26 @@ export async function getDistanceFromRoot(
   connection: DuckDBConnection,
   targetPubkey: string,
 ): Promise<number | null> {
-  const normalizedTarget = normalizePubkey(targetPubkey);
+  return executeWithRetry(async () => {
+    const normalizedTarget = normalizePubkey(targetPubkey);
 
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT distance
-    FROM nsd_root_distances
-    WHERE pubkey = ?
-    LIMIT 1
-    `,
-    [normalizedTarget],
-  );
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT distance
+      FROM nsd_root_distances
+      WHERE pubkey = ?
+      LIMIT 1
+      `,
+      [normalizedTarget],
+    );
 
-  const rows = reader.getRows();
-  if (rows.length === 0) {
-    return null;
-  }
+    const rows = reader.getRows();
+    if (rows.length === 0) {
+      return null;
+    }
 
-  return Number(rows[0]![0]);
+    return Number(rows[0]![0]);
+  });
 }
 
 /**
@@ -461,25 +469,27 @@ export async function getUsersAtDistanceFromRoot(
   connection: DuckDBConnection,
   distance: number,
 ): Promise<string[]> {
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT pubkey
-    FROM nsd_root_distances
-    WHERE distance = ?
-    `,
-    [distance],
-  );
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT pubkey
+      FROM nsd_root_distances
+      WHERE distance = ?
+      `,
+      [distance],
+    );
 
-  const rows = reader.getRows();
-  const pubkeys: string[] = [];
-  
-  for (const row of rows) {
-    if (row[0] && typeof row[0] === "string") {
-      pubkeys.push(row[0]);
+    const rows = reader.getRows();
+    const pubkeys: string[] = [];
+    
+    for (const row of rows) {
+      if (row[0] && typeof row[0] === "string") {
+        pubkeys.push(row[0]);
+      }
     }
-  }
 
-  return pubkeys;
+    return pubkeys;
+  });
 }
 
 /**
@@ -493,25 +503,27 @@ export async function getUsersWithinDistanceFromRoot(
   connection: DuckDBConnection,
   distance: number,
 ): Promise<string[]> {
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT pubkey
-    FROM nsd_root_distances
-    WHERE distance <= ? AND distance > 0
-    `,
-    [distance],
-  );
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT pubkey
+      FROM nsd_root_distances
+      WHERE distance <= ? AND distance > 0
+      `,
+      [distance],
+    );
 
-  const rows = reader.getRows();
-  const pubkeys: string[] = [];
-  
-  for (const row of rows) {
-    if (row[0] && typeof row[0] === "string") {
-      pubkeys.push(row[0]);
+    const rows = reader.getRows();
+    const pubkeys: string[] = [];
+    
+    for (const row of rows) {
+      if (row[0] && typeof row[0] === "string") {
+        pubkeys.push(row[0]);
+      }
     }
-  }
 
-  return pubkeys;
+    return pubkeys;
+  });
 }
 
 /**
@@ -523,26 +535,28 @@ export async function getUsersWithinDistanceFromRoot(
 export async function getRootDistanceDistribution(
   connection: DuckDBConnection,
 ): Promise<Record<number, number>> {
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT distance, COUNT(*) as count
-    FROM nsd_root_distances
-    WHERE distance > 0
-    GROUP BY distance
-    ORDER BY distance
-    `,
-  );
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT distance, COUNT(*) as count
+      FROM nsd_root_distances
+      WHERE distance > 0
+      GROUP BY distance
+      ORDER BY distance
+      `,
+    );
 
-  const rows = reader.getRows();
-  const distribution: Record<number, number> = {};
-  
-  for (const row of rows) {
-    const distance = Number(row[0]);
-    const count = Number(row[1]);
-    distribution[distance] = count;
-  }
+    const rows = reader.getRows();
+    const distribution: Record<number, number> = {};
+    
+    for (const row of rows) {
+      const distance = Number(row[0]);
+      const count = Number(row[1]);
+      distribution[distance] = count;
+    }
 
-  return distribution;
+    return distribution;
+  });
 }
 
 /**
@@ -582,104 +596,104 @@ export async function findShortestDistance(
         EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as to_exists`,
       [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
     );
-  
-  const existenceRow = existenceReader.getRows()[0];
-  if (!existenceRow || !existenceRow[0] || !existenceRow[1]) {
-    // One or both pubkeys don't exist in the graph
-    return null;
-  }
 
-  // Check for direct connection first
-  const directReader = await connection.runAndReadAll(
-    `SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? AND followed_pubkey = ?`,
-    [normalizedFrom, normalizedTo],
-  );
+    const existenceRow = existenceReader.getRows()[0];
+    if (!existenceRow || !existenceRow[0] || !existenceRow[1]) {
+      // One or both pubkeys don't exist in the graph
+      return null;
+    }
 
-  if (directReader.getRows().length > 0) {
-    return 1;
-  }
-
-  // For distance 2, use optimized query that limits exploration
-  if (maxDepth >= 2) {
-    const distance2Reader = await connection.runAndReadAll(
-      `
-      SELECT 1
-      FROM nsd_follows f1
-      JOIN nsd_follows f2 ON f1.followed_pubkey = f2.follower_pubkey
-      WHERE f1.follower_pubkey = ?
-        AND f2.followed_pubkey = ?
-      LIMIT 1
-      `,
+    // Check for direct connection first
+    const directReader = await connection.runAndReadAll(
+      `SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? AND followed_pubkey = ?`,
       [normalizedFrom, normalizedTo],
     );
 
-    if (distance2Reader.getRows().length > 0) {
-      return 2;
+    if (directReader.getRows().length > 0) {
+      return 1;
     }
-  }
 
-  // For distance 3+, use limited bidirectional search
-  // Each direction searches up to half the maxDepth
-  const searchDepth = Math.floor(maxDepth / 2);
+    // For distance 2, use optimized query that limits exploration
+    if (maxDepth >= 2) {
+      const distance2Reader = await connection.runAndReadAll(
+        `
+        SELECT 1
+        FROM nsd_follows f1
+        JOIN nsd_follows f2 ON f1.followed_pubkey = f2.follower_pubkey
+        WHERE f1.follower_pubkey = ?
+          AND f2.followed_pubkey = ?
+        LIMIT 1
+        `,
+        [normalizedFrom, normalizedTo],
+      );
 
-  const reader = await connection.runAndReadAll(
-    `
-    WITH RECURSIVE
-    -- Forward search: limited depth
-    forward_search(node, parent, depth)
-    USING KEY (node) AS (
-      SELECT ? AS node, NULL::VARCHAR AS parent, 0 AS depth
-      UNION
-      SELECT DISTINCT f.followed_pubkey, fs.node, fs.depth + 1
-      FROM forward_search fs
-      JOIN nsd_follows f ON fs.node = f.follower_pubkey
-      LEFT JOIN recurring.forward_search visited ON f.followed_pubkey = visited.node
-      WHERE fs.depth < ?
-        AND visited.node IS NULL
-    ),
-    -- Backward search: limited depth
-    backward_search(node, child, depth)
-    USING KEY (node) AS (
-      SELECT ? AS node, NULL::VARCHAR AS child, 0 AS depth
-      UNION
-      SELECT DISTINCT f.follower_pubkey, bs.node, bs.depth + 1
-      FROM backward_search bs
-      JOIN nsd_follows f ON bs.node = f.followed_pubkey
-      LEFT JOIN recurring.backward_search visited ON f.follower_pubkey = visited.node
-      WHERE bs.depth < ?
-        AND visited.node IS NULL
-    ),
-    -- Find first intersection point
-    intersection AS (
-      SELECT
-        fs.depth + bs.depth AS total_distance
-      FROM forward_search fs
-      JOIN backward_search bs ON fs.node = bs.node
-      WHERE fs.node != ? AND fs.node != ?
-      ORDER BY total_distance ASC
-      LIMIT 1
-    )
-    SELECT total_distance
-    FROM intersection
-    `,
-    [
-      normalizedFrom,
-      searchDepth,
-      normalizedTo,
-      searchDepth,
-      normalizedFrom,
-      normalizedTo,
-    ],
-  );
-  const rows = reader.getRows();
+      if (distance2Reader.getRows().length > 0) {
+        return 2;
+      }
+    }
 
-  if (rows.length === 0) {
-    return null;
-  }
+    // For distance 3+, use limited bidirectional search
+    // Each direction searches up to half the maxDepth
+    const searchDepth = Math.floor(maxDepth / 2);
 
-  const row = rows[0]!;
-  const distance = Number(row[0]);
-  return distance;
+    const reader = await connection.runAndReadAll(
+      `
+      WITH RECURSIVE
+      -- Forward search: limited depth
+      forward_search(node, parent, depth)
+      USING KEY (node) AS (
+        SELECT ? AS node, NULL::VARCHAR AS parent, 0 AS depth
+        UNION
+        SELECT DISTINCT f.followed_pubkey, fs.node, fs.depth + 1
+        FROM forward_search fs
+        JOIN nsd_follows f ON fs.node = f.follower_pubkey
+        LEFT JOIN recurring.forward_search visited ON f.followed_pubkey = visited.node
+        WHERE fs.depth < ?
+          AND visited.node IS NULL
+      ),
+      -- Backward search: limited depth
+      backward_search(node, child, depth)
+      USING KEY (node) AS (
+        SELECT ? AS node, NULL::VARCHAR AS child, 0 AS depth
+        UNION
+        SELECT DISTINCT f.follower_pubkey, bs.node, bs.depth + 1
+        FROM backward_search bs
+        JOIN nsd_follows f ON bs.node = f.followed_pubkey
+        LEFT JOIN recurring.backward_search visited ON f.follower_pubkey = visited.node
+        WHERE bs.depth < ?
+          AND visited.node IS NULL
+      ),
+      -- Find first intersection point
+      intersection AS (
+        SELECT
+          fs.depth + bs.depth AS total_distance
+        FROM forward_search fs
+        JOIN backward_search bs ON fs.node = bs.node
+        WHERE fs.node != ? AND fs.node != ?
+        ORDER BY total_distance ASC
+        LIMIT 1
+      )
+      SELECT total_distance
+      FROM intersection
+      `,
+      [
+        normalizedFrom,
+        searchDepth,
+        normalizedTo,
+        searchDepth,
+        normalizedFrom,
+        normalizedTo,
+      ],
+    );
+    const rows = reader.getRows();
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const row = rows[0]!;
+    const distance = Number(row[0]);
+    return distance;
   });
 }
 
@@ -695,24 +709,26 @@ export async function findShortestDistance(
 export async function getAllUniquePubkeys(
   connection: DuckDBConnection,
 ): Promise<string[]> {
-  const reader = await connection.runAndReadAll(`
-    SELECT DISTINCT pubkey
-    FROM (
-      SELECT follower_pubkey AS pubkey FROM nsd_follows
-      UNION ALL
-      SELECT followed_pubkey AS pubkey FROM nsd_follows
-    )
-  `);
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(`
+      SELECT DISTINCT pubkey
+      FROM (
+        SELECT follower_pubkey AS pubkey FROM nsd_follows
+        UNION ALL
+        SELECT followed_pubkey AS pubkey FROM nsd_follows
+      )
+    `);
 
-  const rows = reader.getRows();
+    const rows = reader.getRows();
 
-  // Extract pubkeys from results
-  const pubkeys: string[] = [];
-  for (const row of rows) {
-    if (row[0] && typeof row[0] === "string") {
-      pubkeys.push(row[0]);
+    // Extract pubkeys from results
+    const pubkeys: string[] = [];
+    for (const row of rows) {
+      if (row[0] && typeof row[0] === "string") {
+        pubkeys.push(row[0]);
+      }
     }
-  }
 
-  return pubkeys;
+    return pubkeys;
+  });
 }

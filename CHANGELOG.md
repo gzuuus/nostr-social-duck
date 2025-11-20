@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.13
+
+### Patch Changes
+
+- feat: ensure consistent retry logic for all database operations
+
 ## 0.1.12
 
 ### Patch Changes

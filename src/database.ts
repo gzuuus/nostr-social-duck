@@ -3,6 +3,7 @@
  */
 
 import { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
+import { executeWithRetry } from "./utils.js";
 
 /**
  * SQL schema for the follows table
@@ -53,13 +54,15 @@ export async function initializeDatabase(
  * @param connection - Active DuckDB connection
  */
 export async function setupSchema(connection: DuckDBConnection): Promise<void> {
-  // Create table and indexes in a single transaction
-  await connection.run(`
-    BEGIN TRANSACTION;
-    ${CREATE_FOLLOWS_TABLE}
-    ${CREATE_INDEXES}
-    COMMIT;
-  `);
+  // Create table and indexes in a single transaction with retry logic
+  await executeWithRetry(async () => {
+    await connection.run(`
+      BEGIN TRANSACTION;
+      ${CREATE_FOLLOWS_TABLE}
+      ${CREATE_INDEXES}
+      COMMIT;
+    `);
+  });
 }
 
 /**
@@ -73,33 +76,35 @@ export async function getTableStats(connection: DuckDBConnection): Promise<{
   uniqueFollowed: number;
   uniqueEvents: number;
 }> {
-  const reader = await connection.runAndReadAll(`
-    SELECT
-      COUNT(*) as total_follows,
-      COUNT(DISTINCT follower_pubkey) as unique_followers,
-      COUNT(DISTINCT followed_pubkey) as unique_followed,
-      COUNT(DISTINCT follower_pubkey) as unique_events
-    FROM nsd_follows
-  `);
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(`
+      SELECT
+        COUNT(*) as total_follows,
+        COUNT(DISTINCT follower_pubkey) as unique_followers,
+        COUNT(DISTINCT followed_pubkey) as unique_followed,
+        COUNT(DISTINCT follower_pubkey) as unique_events
+      FROM nsd_follows
+    `);
 
-  const rows = reader.getRows();
+    const rows = reader.getRows();
 
-  if (rows.length === 0) {
+    if (rows.length === 0) {
+      return {
+        totalFollows: 0,
+        uniqueFollowers: 0,
+        uniqueFollowed: 0,
+        uniqueEvents: 0,
+      };
+    }
+
+    const row = rows[0];
     return {
-      totalFollows: 0,
-      uniqueFollowers: 0,
-      uniqueFollowed: 0,
-      uniqueEvents: 0,
+      totalFollows: Number(row![0]),
+      uniqueFollowers: Number(row![1]),
+      uniqueFollowed: Number(row![2]),
+      uniqueEvents: Number(row![3]),
     };
-  }
-
-  const row = rows[0];
-  return {
-    totalFollows: Number(row![0]),
-    uniqueFollowers: Number(row![1]),
-    uniqueFollowed: Number(row![2]),
-    uniqueEvents: Number(row![3]),
-  };
+  });
 }
 
 /**
@@ -112,17 +117,19 @@ export async function pubkeyExists(
   connection: DuckDBConnection,
   pubkey: string,
 ): Promise<boolean> {
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT 1
-    FROM nsd_follows
-    WHERE follower_pubkey = ? OR followed_pubkey = ?
-    LIMIT 1
-    `,
-    [pubkey, pubkey],
-  );
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT 1
+      FROM nsd_follows
+      WHERE follower_pubkey = ? OR followed_pubkey = ?
+      LIMIT 1
+      `,
+      [pubkey, pubkey],
+    );
 
-  return reader.getRows().length > 0;
+    return reader.getRows().length > 0;
+  });
 }
 
 /**
@@ -135,17 +142,19 @@ export async function getFollowing(
   connection: DuckDBConnection,
   pubkey: string,
 ): Promise<string[]> {
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT DISTINCT followed_pubkey
-    FROM nsd_follows
-    WHERE follower_pubkey = ?
-    ORDER BY followed_pubkey
-    `,
-    [pubkey],
-  );
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT DISTINCT followed_pubkey
+      FROM nsd_follows
+      WHERE follower_pubkey = ?
+      ORDER BY followed_pubkey
+      `,
+      [pubkey],
+    );
 
-  return reader.getRows().map((row) => row![0] as string);
+    return reader.getRows().map((row) => row![0] as string);
+  });
 }
 
 /**
@@ -158,15 +167,17 @@ export async function getFollowers(
   connection: DuckDBConnection,
   pubkey: string,
 ): Promise<string[]> {
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT DISTINCT follower_pubkey
-    FROM nsd_follows
-    WHERE followed_pubkey = ?
-    ORDER BY follower_pubkey
-    `,
-    [pubkey],
-  );
+  return executeWithRetry(async () => {
+    const reader = await connection.runAndReadAll(
+      `
+      SELECT DISTINCT follower_pubkey
+      FROM nsd_follows
+      WHERE followed_pubkey = ?
+      ORDER BY follower_pubkey
+      `,
+      [pubkey],
+    );
 
-  return reader.getRows().map((row) => row![0] as string);
+    return reader.getRows().map((row) => row![0] as string);
+  });
 }

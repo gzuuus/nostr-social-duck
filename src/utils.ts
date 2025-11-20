@@ -23,28 +23,12 @@ export async function executeWithRetry<T>(
   operation: () => Promise<T>,
   maxRetries: number = 3,
 ): Promise<T> {
-  let retryCount = 0;
-
-  while (true) {
+  for (let i = 0; i < maxRetries; i++) {
     try {
       return await operation();
-    } catch (error) {
-      // Check if this is a transaction conflict that can be retried
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      const isRetryable =
-        errorMessage.includes("Transaction conflict") ||
-        errorMessage.includes("Failed to execute prepared statement");
-
-      if (isRetryable && retryCount < maxRetries) {
-        retryCount++;
-        // Exponential backoff with minimal object creation
-        await new Promise((resolve) =>
-          setTimeout(resolve, Math.pow(2, retryCount) * 10),
-        );
-        continue;
-      }
-      throw error; // Re-throw if not retryable or max retries reached
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50 << i));
     }
   }
+  return operation();
 }
