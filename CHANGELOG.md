@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.14
+
+### Patch Changes
+
+- perf: remove retry logic from read operations
+
 ## 0.1.13
 
 ### Patch Changes
