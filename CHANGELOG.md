@@ -1,5 +1,13 @@
 # nostr-social-duck
 
+## 0.1.15
+
+### Patch Changes
+
+- fix: improve analyzer connection handling
+
+  This change ensures that the analyzer's connection is properly managed and closed, preventing potential resource leaks and transaction conflicts. It also removes redundant connection validation logic and simplifies the code flow.
+
 ## 0.1.14
 
 ### Patch Changes
