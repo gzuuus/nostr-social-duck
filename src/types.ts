@@ -127,6 +127,23 @@ export interface SocialGraphAnalyzer {
   ): Promise<number | null>;
 
   /**
+   * Gets the shortest distances from a source pubkey to multiple target pubkeys in batch
+   *
+   * This method optimizes distance calculations by leveraging batch operations,
+   * which can be particularly efficient when a root is specified and the root table is available.
+   *
+   * @param fromPubkey - Starting pubkey (64-character hex string)
+   * @param toPubkeys - Array of target pubkeys to calculate distances to
+   * @param maxDepth - Maximum search depth (default: 6)
+   * @returns Promise resolving to a map of target pubkey -> distance, or null if no path exists
+   */
+  getShortestDistancesBatch(
+    fromPubkey: string,
+    toPubkeys: string[],
+    maxDepth?: number,
+  ): Promise<Map<string, number | null>>;
+
+  /**
    * Get all pubkeys reachable from a starting pubkey within a specified distance
    * @param fromPubkey - Starting pubkey (64-character hex string)
    * @param distance - Maximum distance (number of hops) to search

@@ -9,6 +9,8 @@ import {
   TEST_PUBKEYS,
   createSimpleFollowChain,
   createMockKind3Event,
+  createComplexGraph,
+  createDisconnectedGraph,
 } from "./test-utils.js";
 
 describe("DuckDBSocialGraphAnalyzer", () => {
@@ -116,6 +118,111 @@ describe("DuckDBSocialGraphAnalyzer", () => {
 
         expect(path).toBeNull();
       });
+    });
+  });
+
+  describe("getShortestDistancesBatch", () => {
+    it("should calculate distances to multiple targets in batch", async () => {
+      const events = createComplexGraph();
+      await analyzer.ingestEvents(events);
+
+      const distances = await analyzer.getShortestDistancesBatch(
+        TEST_PUBKEYS.adam,
+        [TEST_PUBKEYS.fiatjaf, TEST_PUBKEYS.snowden, TEST_PUBKEYS.sirius],
+      );
+
+      expect(distances.size).toBe(3);
+      expect(distances.get(TEST_PUBKEYS.fiatjaf)).toBe(1); // Direct follow
+      expect(distances.get(TEST_PUBKEYS.snowden)).toBe(1); // Direct follow
+      expect(distances.get(TEST_PUBKEYS.sirius)).toBe(2); // Through fiatjaf
+    });
+
+    it("should handle disconnected nodes correctly", async () => {
+      const events = createDisconnectedGraph();
+      await analyzer.ingestEvents(events);
+
+      const distances = await analyzer.getShortestDistancesBatch(
+        TEST_PUBKEYS.adam,
+        [TEST_PUBKEYS.fiatjaf, TEST_PUBKEYS.bob, TEST_PUBKEYS.alice],
+      );
+
+      expect(distances.size).toBe(3);
+      expect(distances.get(TEST_PUBKEYS.fiatjaf)).toBe(1); // Direct follow
+      expect(distances.get(TEST_PUBKEYS.bob)).toBeNull(); // No path
+      expect(distances.get(TEST_PUBKEYS.alice)).toBeNull(); // No path
+    });
+
+    it("should handle empty target array", async () => {
+      const events = createSimpleFollowChain();
+      await analyzer.ingestEvents(events);
+
+      const distances = await analyzer.getShortestDistancesBatch(
+        TEST_PUBKEYS.adam,
+        [],
+      );
+
+      expect(distances.size).toBe(0);
+    });
+
+    it("should handle duplicate target pubkeys", async () => {
+      const events = createSimpleFollowChain();
+      await analyzer.ingestEvents(events);
+
+      const distances = await analyzer.getShortestDistancesBatch(
+        TEST_PUBKEYS.adam,
+        [TEST_PUBKEYS.fiatjaf, TEST_PUBKEYS.fiatjaf, TEST_PUBKEYS.snowden],
+      );
+
+      expect(distances.size).toBe(2); // Duplicates should be removed
+      expect(distances.get(TEST_PUBKEYS.fiatjaf)).toBe(1);
+      expect(distances.get(TEST_PUBKEYS.snowden)).toBe(2);
+    });
+
+    it("should work with root pubkey optimization", async () => {
+      const events = createComplexGraph();
+      await analyzer.ingestEvents(events);
+
+      // Set root pubkey to adam
+      await analyzer.setRootPubkey(TEST_PUBKEYS.adam);
+
+      const distances = await analyzer.getShortestDistancesBatch(
+        TEST_PUBKEYS.adam,
+        [TEST_PUBKEYS.fiatjaf, TEST_PUBKEYS.snowden, TEST_PUBKEYS.sirius],
+      );
+
+      expect(distances.size).toBe(3);
+      expect(distances.get(TEST_PUBKEYS.fiatjaf)).toBe(1);
+      expect(distances.get(TEST_PUBKEYS.snowden)).toBe(1);
+      expect(distances.get(TEST_PUBKEYS.sirius)).toBe(2);
+    });
+
+    it("should handle non-root pubkey with root optimization available", async () => {
+      const events = createComplexGraph();
+      await analyzer.ingestEvents(events);
+
+      // Set root pubkey to adam
+      await analyzer.setRootPubkey(TEST_PUBKEYS.adam);
+
+      // Query from fiatjaf (not the root)
+      const distances = await analyzer.getShortestDistancesBatch(
+        TEST_PUBKEYS.fiatjaf,
+        [TEST_PUBKEYS.adam, TEST_PUBKEYS.snowden, TEST_PUBKEYS.sirius],
+      );
+
+      expect(distances.size).toBe(3);
+      expect(distances.get(TEST_PUBKEYS.adam)).toBe(2); // Through snowden or sirius (fiatjaf -> snowden -> adam)
+      expect(distances.get(TEST_PUBKEYS.snowden)).toBe(1); // Direct follow
+      expect(distances.get(TEST_PUBKEYS.sirius)).toBe(1); // Direct follow
+    });
+
+    it("should throw error when analyzer is closed", async () => {
+      await analyzer.close();
+
+      await expect(
+        analyzer.getShortestDistancesBatch(TEST_PUBKEYS.adam, [
+          TEST_PUBKEYS.fiatjaf,
+        ]),
+      ).rejects.toThrow("Analyzer has been closed");
     });
   });
 });

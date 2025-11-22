@@ -52,6 +52,8 @@ export {
   getUsersAtDistanceFromRoot,
   getUsersWithinDistanceFromRoot,
   getRootDistanceDistribution,
+  getDistancesFromRootBatch,
+  getDistancesBatchBidirectional,
 } from "./graph-analysis.js";
 
 // Ingestion utilities (for advanced usage)

@@ -33,6 +33,8 @@ import {
   getUsersAtDistanceFromRoot,
   getUsersWithinDistanceFromRoot,
   getRootDistanceDistribution,
+  getDistancesFromRootBatch,
+  getDistancesBatchBidirectional,
 } from "./graph-analysis.js";
 import { normalizePubkey } from "./parser.js";
 import { executeWithRetry } from "./utils.js";
@@ -279,6 +281,48 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
 
     // Otherwise, use the standard bidirectional search
     return findShortestDistance(this.connection, fromPubkey, toPubkey, depth);
+  }
+
+  /**
+   * Gets the shortest distances from a source pubkey to multiple target pubkeys in batch
+   *
+   * This method optimizes distance calculations by leveraging batch operations,
+   * which can be particularly efficient when a root is specified and the root table is available.
+   * It handles both optimized root-based lookups and standard bidirectional search for non-root queries.
+   *
+   * @param fromPubkey - Starting pubkey (64-character hex string)
+   * @param toPubkeys - Array of target pubkeys to calculate distances to
+   * @param maxDepth - Maximum search depth (defaults to analyzer's maxDepth)
+   * @returns Promise resolving to a map of target pubkey -> distance, or null if no path exists
+   *
+   */
+  async getShortestDistancesBatch(
+    fromPubkey: string,
+    toPubkeys: string[],
+  ): Promise<Map<string, number | null>> {
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    const normalizedFrom = normalizePubkey(fromPubkey);
+
+    if (this.rootPubkey && normalizedFrom === this.rootPubkey) {
+      if (!this.rootTableValid) {
+        await buildRootDistancesTable(
+          this.connection,
+          this.rootPubkey,
+          this.maxDepth,
+        );
+        this.rootTableValid = true;
+      }
+      return getDistancesFromRootBatch(this.connection, toPubkeys);
+    }
+
+    return getDistancesBatchBidirectional(
+      this.connection,
+      fromPubkey,
+      toPubkeys,
+      this.maxDepth,
+    );
   }
 
   /**

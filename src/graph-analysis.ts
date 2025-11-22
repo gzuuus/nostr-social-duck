@@ -710,3 +710,80 @@ export async function getAllUniquePubkeys(
 
   return pubkeys;
 }
+
+/**
+ * Gets distances from root to multiple target pubkeys using the pre-calculated table
+ *
+ * @param connection - Active DuckDB connection
+ * @param toPubkeys - Array of target pubkeys
+ * @returns Promise resolving to a map of target pubkey -> distance
+ */
+export async function getDistancesFromRootBatch(
+  connection: DuckDBConnection,
+  toPubkeys: string[],
+): Promise<Map<string, number | null>> {
+  if (toPubkeys.length === 0) {
+    return new Map();
+  }
+
+  // Use parameterized query with IN clause for efficient batch lookup
+  const placeholders = toPubkeys.map(() => '?').join(',');
+  const reader = await connection.runAndReadAll(
+    `SELECT pubkey, distance FROM nsd_root_distances WHERE pubkey IN (${placeholders})`,
+    toPubkeys
+  );
+
+  const rows = reader.getRows();
+  const result = new Map<string, number | null>();
+
+  // Initialize result with all target pubkeys set to null
+  for (const pubkey of toPubkeys) {
+    result.set(pubkey, null);
+  }
+
+  // Update with actual distances from the query results
+  for (const row of rows) {
+    const pubkey = String(row[0]);
+    const distance = Number(row[1]);
+    result.set(pubkey, distance);
+  }
+
+  return result;
+}
+
+/**
+ * Gets distances from a source to multiple target pubkeys using batch bidirectional search
+ *
+ * @param connection - Active DuckDB connection
+ * @param fromPubkey - Starting pubkey
+ * @param toPubkeys - Array of target pubkeys
+ * @param maxDepth - Maximum search depth
+ * @returns Promise resolving to a map of target pubkey -> distance
+ */
+export async function getDistancesBatchBidirectional(
+  connection: DuckDBConnection,
+  fromPubkey: string,
+  toPubkeys: string[],
+  maxDepth: number,
+): Promise<Map<string, number | null>> {
+  if (toPubkeys.length === 0) {
+    return new Map();
+  }
+
+  // For batch operations, we'll use individual queries for each target
+  // This is simpler and more reliable than complex recursive CTEs with multiple targets
+  const result = new Map<string, number | null>();
+  
+  // Initialize with null values for all targets
+  for (const pubkey of toPubkeys) {
+    result.set(pubkey, null);
+  }
+
+  // Process each target individually using the existing optimized function
+  for (const targetPubkey of toPubkeys) {
+    const distance = await findShortestDistance(connection, fromPubkey, targetPubkey, maxDepth);
+    result.set(targetPubkey, distance);
+  }
+
+  return result;
+}
