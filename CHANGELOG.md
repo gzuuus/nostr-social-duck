@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.17
+
+### Patch Changes
+
+- refactor: improve analyzer and database types, api, await using
+
 ## 0.1.16
 
 ### Patch Changes

@@ -45,7 +45,9 @@ import { executeWithRetry } from "./utils.js";
  * This class provides the main API for analyzing social graphs from Nostr follow lists.
  * It uses DuckDB for efficient graph traversal and analysis.
  */
-export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
+export class DuckDBSocialGraphAnalyzer
+  implements ISocialGraphAnalyzer, AsyncDisposable
+{
   private instance: DuckDBInstance | null = null;
   private connection: DuckDBConnection;
   private maxDepth: number;
@@ -72,16 +74,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param config - Configuration options
    * @returns Promise resolving to a new analyzer instance
    *
-   * @example
-   * ```typescript
-   * // In-memory database
-   * const analyzer = await DuckDBSocialGraphAnalyzer.create();
-   *
-   * // Persistent database
-   * const analyzer = await DuckDBSocialGraphAnalyzer.create({
-   *   dbPath: './social-graph.db'
-   * });
-   * ```
    */
   static async create(
     config: SocialGraphConfig = {},
@@ -122,15 +114,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param maxDepth - Maximum search depth for paths (default: 6)
    * @returns Promise resolving to a new analyzer instance
    *
-   * @example
-   * ```typescript
-   * // Use existing connection
-   * const connection = await myInstance.connect();
-   * const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection);
-   *
-   * // Use with custom maxDepth
-   * const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 10);
-   * ```
    */
   static async connect(
     connection: DuckDBConnection,
@@ -178,10 +161,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param events - Array of Nostr Kind 3 events to ingest
    * @throws Error if any event is invalid or the analyzer is closed
    *
-   * @example
-   * ```typescript
-   * await analyzer.ingestEvents([event1, event2, event3]);
-   * ```
    */
   async ingestEvents(events: NostrEvent[]): Promise<void> {
     if (this.closed) {
@@ -206,18 +185,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param maxDepth - Maximum search depth (defaults to analyzer's maxDepth)
    * @returns Promise resolving to the shortest path, or null if no path exists
    *
-   * @example
-   * ```typescript
-   * const path = await analyzer.getShortestPath(
-   *   "abc123...",
-   *   "def456..."
-   * );
-   *
-   * if (path) {
-   *   console.log(`Distance: ${path.distance}`);
-   *   console.log(`Path: ${path.path.join(' -> ')}`);
-   * }
-   * ```
    */
   async getShortestPath(
     fromPubkey: string,
@@ -242,17 +209,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param maxDepth - Maximum search depth (defaults to analyzer's maxDepth)
    * @returns Promise resolving to the distance, or null if no path exists
    *
-   * @example
-   * ```typescript
-   * const distance = await analyzer.getShortestDistance(
-   *   "abc123...",
-   *   "def456..."
-   * );
-   *
-   * if (distance !== null) {
-   *   console.log(`Distance: ${distance} hops`);
-   * }
-   * ```
    */
   async getShortestDistance(
     fromPubkey: string,
@@ -335,15 +291,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param distance - Maximum distance (number of hops) to search
    * @returns Promise resolving to array of pubkeys (excluding the starting pubkey)
    *
-   * @example
-   * ```typescript
-   * // Get all users within 2 hops from a pubkey
-   * const nearbyUsers = await analyzer.getUsersWithinDistance(
-   *   "abc123...",
-   *   2
-   * );
-   * // Returns: ["def456...", "ghi789...", ...]
-   * ```
    */
   async getUsersWithinDistance(
     fromPubkey: string,
@@ -439,11 +386,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    *
    * @returns Promise resolving to array of all unique pubkeys in the graph
    *
-   * @example
-   * ```typescript
-   * const allPubkeys = await analyzer.getAllUniquePubkeys();
-   * console.log(`Total unique pubkeys in graph: ${allPubkeys.length}`);
-   * ```
    */
   async getAllUniquePubkeys(): Promise<string[]> {
     if (this.closed) {
@@ -477,11 +419,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param pubkey - The pubkey to check
    * @returns Promise resolving to true if the pubkey exists
    *
-   * @example
-   * ```typescript
-   * const exists = await analyzer.pubkeyExists("abc123...");
-   * console.log(`Pubkey exists in graph: ${exists}`);
-   * ```
    */
   async pubkeyExists(pubkey: string): Promise<boolean> {
     if (this.closed) {
@@ -497,14 +434,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param followedPubkey - The followed pubkey
    * @returns Promise resolving to true if the relationship exists
    *
-   * @example
-   * ```typescript
-   * const isFollowing = await analyzer.isDirectFollow(
-   *   "followerPubkey...",
-   *   "followedPubkey..."
-   * );
-   * console.log(`Direct follow exists: ${isFollowing}`);
-   * ```
    */
   async isDirectFollow(
     followerPubkey: string,
@@ -523,14 +452,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param pubkey2 - Second pubkey
    * @returns Promise resolving to true if they mutually follow each other
    *
-   * @example
-   * ```typescript
-   * const areMutual = await analyzer.areMutualFollows(
-   *   "pubkey1...",
-   *   "pubkey2..."
-   * );
-   * console.log(`Mutual follows: ${areMutual}`);
-   * ```
    */
   async areMutualFollows(pubkey1: string, pubkey2: string): Promise<boolean> {
     if (this.closed) {
@@ -545,11 +466,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param pubkey - The pubkey to check
    * @returns Promise resolving to object with outDegree (following) and inDegree (followers)
    *
-   * @example
-   * ```typescript
-   * const degree = await analyzer.getPubkeyDegree("pubkey123...");
-   * console.log(`Following: ${degree.outDegree}, Followers: ${degree.inDegree}`);
-   * ```
    */
   async getPubkeyDegree(
     pubkey: string,
@@ -565,10 +481,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    *
    * After calling this method, the analyzer cannot be used anymore.
    *
-   * @example
-   * ```typescript
-   * await analyzer.close();
-   * ```
    */
   async close(): Promise<void> {
     if (this.closed) {
@@ -591,6 +503,13 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     }
 
     this.closed = true;
+  }
+
+  /**
+   * Implementation of AsyncDisposable for 'await using' syntax
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
   }
 
   /**

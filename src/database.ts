@@ -4,15 +4,10 @@
 
 import { DuckDBInstance, DuckDBConnection } from "@duckdb/node-api";
 import { executeWithRetry } from "./utils.js";
+import { GraphStats } from "./types.js";
 
 /**
  * SQL schema for the follows table
- *
- * Optimizations:
- * 1. Removed event_id from PRIMARY KEY - we only keep latest event per follower
- * 2. Removed event_id column entirely - not needed for graph analysis
- * 3. Simplified to just the edge data: follower -> followed with timestamp
- * 4. PRIMARY KEY on (follower_pubkey, followed_pubkey) provides implicit index
  */
 const CREATE_FOLLOWS_TABLE = `
 CREATE TABLE IF NOT EXISTS nsd_follows (
@@ -25,11 +20,6 @@ CREATE TABLE IF NOT EXISTS nsd_follows (
 
 /**
  * SQL to create indexes for efficient graph traversal
- *
- * Optimizations:
- * 1. Removed compound index - PRIMARY KEY already provides this
- * 2. Only need index on followed_pubkey for reverse lookups
- * 3. follower_pubkey is already indexed via PRIMARY KEY
  */
 const CREATE_INDEXES = `
 -- Index for finding who follows a pubkey (incoming edges)
@@ -70,18 +60,14 @@ export async function setupSchema(connection: DuckDBConnection): Promise<void> {
  * @param connection - Active DuckDB connection
  * @returns Object containing table statistics
  */
-export async function getTableStats(connection: DuckDBConnection): Promise<{
-  totalFollows: number;
-  uniqueFollowers: number;
-  uniqueFollowed: number;
-  uniqueEvents: number;
-}> {
+export async function getTableStats(
+  connection: DuckDBConnection,
+): Promise<GraphStats> {
   const reader = await connection.runAndReadAll(`
     SELECT
       COUNT(*) as total_follows,
       COUNT(DISTINCT follower_pubkey) as unique_followers,
       COUNT(DISTINCT followed_pubkey) as unique_followed,
-      COUNT(DISTINCT follower_pubkey) as unique_events
     FROM nsd_follows
   `);
 
@@ -92,7 +78,6 @@ export async function getTableStats(connection: DuckDBConnection): Promise<{
       totalFollows: 0,
       uniqueFollowers: 0,
       uniqueFollowed: 0,
-      uniqueEvents: 0,
     };
   }
 
@@ -101,7 +86,6 @@ export async function getTableStats(connection: DuckDBConnection): Promise<{
     totalFollows: Number(row![0]),
     uniqueFollowers: Number(row![1]),
     uniqueFollowed: Number(row![2]),
-    uniqueEvents: Number(row![3]),
   };
 }
 

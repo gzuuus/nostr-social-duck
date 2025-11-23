@@ -68,7 +68,6 @@ describe("DuckDBSocialGraphAnalyzer", () => {
         const stats = await analyzer.getStats();
         // Should only have the latest event's follows
         expect(stats.totalFollows).toBe(1);
-        expect(stats.uniqueEvents).toBe(1);
 
         // Should follow snowden, not fiatjaf
         const path = await analyzer.getShortestPath(
@@ -266,7 +265,6 @@ describe("persistent database", () => {
       const stats = await persistentAnalyzer.getStats();
       expect(stats.totalFollows).toBe(2);
       expect(stats.uniqueFollowers).toBe(2);
-      expect(stats.uniqueEvents).toBe(2);
 
       // Test path finding
       const path = await persistentAnalyzer.getShortestPath(
@@ -299,7 +297,6 @@ describe("persistent database", () => {
         const reopenedStats = await reopenedAnalyzer.getStats();
         expect(reopenedStats.totalFollows).toBe(2);
         expect(reopenedStats.uniqueFollowers).toBe(2);
-        expect(reopenedStats.uniqueEvents).toBe(2);
 
         // Verify path finding still works
         const reopenedPath = await reopenedAnalyzer.getShortestPath(

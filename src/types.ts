@@ -76,8 +76,6 @@ export interface GraphStats {
   uniqueFollowers: number;
   /** Number of unique followed pubkeys */
   uniqueFollowed: number;
-  /** Number of unique events processed */
-  uniqueEvents: number;
 }
 
 /**
