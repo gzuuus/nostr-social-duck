@@ -20,3 +20,6 @@ export type {
   GraphStats,
   SocialGraphAnalyzer,
 } from "./types.js";
+
+// Utility functions
+export { executeWithRetry, isHex, isHexKey } from "./utils.js";

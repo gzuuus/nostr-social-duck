@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.18
+
+### Patch Changes
+
+- fix: restore 'executeWithRetry' export
+
 ## 0.1.17
 
 ### Patch Changes
