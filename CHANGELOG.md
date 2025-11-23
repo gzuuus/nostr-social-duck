@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.19
+
+### Patch Changes
+
+- feat: update platform compatibility and build process
+
 ## 0.1.18
 
 ### Patch Changes

@@ -258,19 +258,17 @@ With strategic indexes for optimal graph traversal:
 
 ## Platform Compatibility
 
+This library supports all major platforms through DuckDB's native bindings:
+
+- **Linux x64** (Ubuntu, Debian, CentOS, etc.)
+- **Linux arm64** (Raspberry Pi, AWS Graviton, etc.)
+- **macOS x64** (Intel Macs)
+- **macOS arm64** (Apple Silicon M1/M2/M3)
+- **Windows x64** (Windows 10/11)
+
 ### ⚠️ Important Limitations
 
-**This library is NOT intended for browser use** and currently only works on **Linux environments**.
-
-#### Future Platform Support
-
-We plan to add support (if requested) for:
-
-- macOS (Darwin) environments
-- Windows environments
-- WebAssembly builds for browser compatibility
-
-For now, please use this library in Node.js/Bun.js environments on Linux systems.
+**This library is NOT intended for browser use** - it requires native DuckDB bindings that are only available in Node.js/Bun.js environments.
 
 ## License
 

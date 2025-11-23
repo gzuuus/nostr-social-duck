@@ -1,7 +1,7 @@
 {
   "name": "nostr-social-duck",
   "description": "Nostr Social Graph Analysis library using DuckDB for efficient graph operations",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "author": "Gzuuus",
   "repository": {
     "type": "git",
@@ -16,7 +16,7 @@
     }
   },
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target node --external \"@duckdb/node-bindings-linux-x64/duckdb.node\" --external \"@duckdb/node-bindings-linux-arm64/duckdb.node\" --external \"@duckdb/node-bindings-darwin-arm64/duckdb.node\" --external \"@duckdb/node-bindings-darwin-x64/duckdb.node\" --external \"@duckdb/node-bindings-win32-x64/duckdb.node\" && bun tsc --emitDeclarationOnly --declarationMap false",
+    "build": "bun build ./src/index.ts --outdir ./dist --target node --external \"@duckdb/node-api\" --external \"@duckdb/node-bindings-*\" && bun tsc --emitDeclarationOnly --declarationMap false",
     "dev": "bun --watch ./src/index.ts",
     "lint": "eslint src/",
     "format": "prettier --write .",
@@ -52,5 +52,12 @@
   },
   "dependencies": {
     "@duckdb/node-api": "^1.4.2-r.1"
+  },
+  "optionalDependencies": {
+    "@duckdb/node-bindings-linux-x64": "^1.4.2-r.1",
+    "@duckdb/node-bindings-linux-arm64": "^1.4.2-r.1",
+    "@duckdb/node-bindings-darwin-x64": "^1.4.2-r.1",
+    "@duckdb/node-bindings-darwin-arm64": "^1.4.2-r.1",
+    "@duckdb/node-bindings-win32-x64": "^1.4.2-r.1"
   }
 }
