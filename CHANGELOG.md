@@ -1,5 +1,43 @@
 # nostr-social-duck
 
+## 0.1.18
+
+### Patch Changes
+
+- fix: restore 'executeWithRetry' export
+
+## 0.1.17
+
+### Patch Changes
+
+- refactor: improve analyzer and database types, api, await using
+
+## 0.1.16
+
+### Patch Changes
+
+- feat(analyzer): add getShortestDistancesBatch for efficient distance calculations
+
+## 0.1.15
+
+### Patch Changes
+
+- fix: improve analyzer connection handling
+
+  This change ensures that the analyzer's connection is properly managed and closed, preventing potential resource leaks and transaction conflicts. It also removes redundant connection validation logic and simplifies the code flow.
+
+## 0.1.14
+
+### Patch Changes
+
+- perf: remove retry logic from read operations
+
+## 0.1.13
+
+### Patch Changes
+
+- feat: ensure consistent retry logic for all database operations
+
 ## 0.1.12
 
 ### Patch Changes

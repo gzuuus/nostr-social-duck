@@ -5,6 +5,7 @@
 import { DuckDBConnection } from "@duckdb/node-api";
 import type { SocialPath } from "./types.js";
 import { normalizePubkey } from "./parser.js";
+import { executeWithRetry } from "./utils.js";
 
 /**
  * Finds the shortest path between two pubkeys using optimized bidirectional BFS
@@ -380,35 +381,38 @@ export async function buildRootDistancesTable(
 ): Promise<void> {
   const normalizedRoot = normalizePubkey(rootPubkey);
 
-  // Create temporary table for O(1) lookups using optimized BFS
-  // We use CREATE OR REPLACE to handle updates efficiently
-  await connection.run(
-    `
-    CREATE OR REPLACE TEMPORARY TABLE nsd_root_distances AS
-    WITH RECURSIVE bfs(pubkey, distance)
-    USING KEY (pubkey) AS (
-      -- Base case: root node
-      SELECT ?::VARCHAR AS pubkey, 0 AS distance
-      UNION
-      -- Recursive step
-      SELECT DISTINCT
-        f.followed_pubkey AS pubkey,
-        bfs.distance + 1 AS distance
-      FROM bfs
-      JOIN nsd_follows f ON bfs.pubkey = f.follower_pubkey
-      LEFT JOIN recurring.bfs visited ON f.followed_pubkey = visited.pubkey
-      WHERE bfs.distance < ?
-        AND visited.pubkey IS NULL
-    )
-    SELECT pubkey, distance FROM bfs
-    `,
-    [normalizedRoot, maxDepth],
-  );
+  // Use retry logic for transaction conflicts
+  await executeWithRetry(async () => {
+    // Create temporary table for O(1) lookups using optimized BFS
+    // We use CREATE OR REPLACE to handle updates efficiently
+    await connection.run(
+      `
+      CREATE OR REPLACE TEMPORARY TABLE nsd_root_distances AS
+      WITH RECURSIVE bfs(pubkey, distance)
+      USING KEY (pubkey) AS (
+        -- Base case: root node
+        SELECT ?::VARCHAR AS pubkey, 0 AS distance
+        UNION
+        -- Recursive step
+        SELECT DISTINCT
+          f.followed_pubkey AS pubkey,
+          bfs.distance + 1 AS distance
+        FROM bfs
+        JOIN nsd_follows f ON bfs.pubkey = f.follower_pubkey
+        LEFT JOIN recurring.bfs visited ON f.followed_pubkey = visited.pubkey
+        WHERE bfs.distance < ?
+          AND visited.pubkey IS NULL
+      )
+      SELECT pubkey, distance FROM bfs
+      `,
+      [normalizedRoot, maxDepth],
+    );
 
-  // Create index for fast lookups
-  await connection.run(`
-    CREATE INDEX IF NOT EXISTS idx_root_distances ON nsd_root_distances(pubkey)
-  `);
+    // Create index for fast lookups
+    await connection.run(`
+      CREATE INDEX IF NOT EXISTS idx_root_distances ON nsd_root_distances(pubkey)
+    `);
+  });
 }
 
 /**
@@ -555,26 +559,25 @@ export async function findShortestDistance(
   toPubkey: string,
   maxDepth: number = 6,
 ): Promise<number | null> {
-  try {
-    // Normalize pubkeys to lowercase for consistent comparison
-    const normalizedFrom = normalizePubkey(fromPubkey);
-    const normalizedTo = normalizePubkey(toPubkey);
+  // Normalize pubkeys to lowercase for consistent comparison
+  const normalizedFrom = normalizePubkey(fromPubkey);
+  const normalizedTo = normalizePubkey(toPubkey);
 
-    // If source and target are the same, return distance 0
-    if (normalizedFrom === normalizedTo) {
-      return 0;
-    }
+  // If source and target are the same, return distance 0
+  if (normalizedFrom === normalizedTo) {
+    return 0;
+  }
 
-    // Quick check: Do both pubkeys exist in the graph?
-    const existenceReader = await connection.runAndReadAll(
-      `SELECT
-        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
-        EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as from_exists,
-        EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
-        EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as to_exists`,
-      [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
-    );
-  
+  // Quick check: Do both pubkeys exist in the graph?
+  const existenceReader = await connection.runAndReadAll(
+    `SELECT
+      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as from_exists,
+      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as to_exists`,
+    [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
+  );
+
   const existenceRow = existenceReader.getRows()[0];
   if (!existenceRow || !existenceRow[0] || !existenceRow[1]) {
     // One or both pubkeys don't exist in the graph
@@ -672,20 +675,6 @@ export async function findShortestDistance(
   const row = rows[0]!;
   const distance = Number(row[0]);
   return distance;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message :
-                        error !== null && error !== undefined ? String(error) :
-                        'Unknown error (null/undefined)';
-    
-    console.error('[findShortestDistance] Error details:', {
-      fromPubkey,
-      toPubkey,
-      maxDepth,
-      errorMessage: errorMessage,
-      errorStack: error instanceof Error ? error.stack : undefined,
-    });
-    throw new Error(`Failed to execute prepared statement: ${errorMessage}`);
-  }
 }
 
 /**
@@ -720,4 +709,81 @@ export async function getAllUniquePubkeys(
   }
 
   return pubkeys;
+}
+
+/**
+ * Gets distances from root to multiple target pubkeys using the pre-calculated table
+ *
+ * @param connection - Active DuckDB connection
+ * @param toPubkeys - Array of target pubkeys
+ * @returns Promise resolving to a map of target pubkey -> distance
+ */
+export async function getDistancesFromRootBatch(
+  connection: DuckDBConnection,
+  toPubkeys: string[],
+): Promise<Map<string, number | null>> {
+  if (toPubkeys.length === 0) {
+    return new Map();
+  }
+
+  // Use parameterized query with IN clause for efficient batch lookup
+  const placeholders = toPubkeys.map(() => '?').join(',');
+  const reader = await connection.runAndReadAll(
+    `SELECT pubkey, distance FROM nsd_root_distances WHERE pubkey IN (${placeholders})`,
+    toPubkeys
+  );
+
+  const rows = reader.getRows();
+  const result = new Map<string, number | null>();
+
+  // Initialize result with all target pubkeys set to null
+  for (const pubkey of toPubkeys) {
+    result.set(pubkey, null);
+  }
+
+  // Update with actual distances from the query results
+  for (const row of rows) {
+    const pubkey = String(row[0]);
+    const distance = Number(row[1]);
+    result.set(pubkey, distance);
+  }
+
+  return result;
+}
+
+/**
+ * Gets distances from a source to multiple target pubkeys using batch bidirectional search
+ *
+ * @param connection - Active DuckDB connection
+ * @param fromPubkey - Starting pubkey
+ * @param toPubkeys - Array of target pubkeys
+ * @param maxDepth - Maximum search depth
+ * @returns Promise resolving to a map of target pubkey -> distance
+ */
+export async function getDistancesBatchBidirectional(
+  connection: DuckDBConnection,
+  fromPubkey: string,
+  toPubkeys: string[],
+  maxDepth: number,
+): Promise<Map<string, number | null>> {
+  if (toPubkeys.length === 0) {
+    return new Map();
+  }
+
+  // For batch operations, we'll use individual queries for each target
+  // This is simpler and more reliable than complex recursive CTEs with multiple targets
+  const result = new Map<string, number | null>();
+  
+  // Initialize with null values for all targets
+  for (const pubkey of toPubkeys) {
+    result.set(pubkey, null);
+  }
+
+  // Process each target individually using the existing optimized function
+  for (const targetPubkey of toPubkeys) {
+    const distance = await findShortestDistance(connection, fromPubkey, targetPubkey, maxDepth);
+    result.set(targetPubkey, distance);
+  }
+
+  return result;
 }

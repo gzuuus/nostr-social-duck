@@ -46,7 +46,7 @@ console.log(`Users within 2 hops: ${nearbyUsers.length}`);
 const stats = await analyzer.getStats();
 console.log(`Total follows: ${stats.totalFollows}`);
 
-// Clean up
+// Clean up (automatic if using 'await using' syntax)
 await analyzer.close();
 ```
 
@@ -77,6 +77,18 @@ const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 10);
 ```
 
 **Note:** When using `connect()`, the analyzer won't close the connection when you call `close()`, allowing you to reuse the connection for other purposes.
+
+### Using the `await using` Syntax for Automatic Cleanup
+
+```typescript
+// Using modern await using syntax for automatic resource cleanup
+await using analyzer = await DuckDBSocialGraphAnalyzer.create();
+
+// Use the analyzer - no need to call close() manually
+await analyzer.ingestEvents(events);
+const path = await analyzer.getShortestPath("pubkey1...", "pubkey2...");
+// Connection automatically closed when analyzer goes out of scope
+```
 
 ### Ingesting Events
 
@@ -180,16 +192,16 @@ const distance = await analyzer.getShortestDistance(
 // Note: This is 2-3x faster than getShortestPath for multi-hop paths
 
 // Root pubkey optimization for high-frequency queries
-await analyzer.setRootPubkey("your_pubkey..."); // Pre-compute distances
+await analyzer.setRootPubkey("your_pubkey..."); // Pre-compute distances (stateful optimization)
 const rootDistance = await analyzer.getShortestDistance(
   "your_pubkey...",
   "target_pubkey...",
-); // O(1) lookup
+); // O(1) lookup when querying from the root
 
-// Get users at specific distance from root
+// Get users at specific distance from root (requires root to be set)
 const usersAtDistance = await analyzer.getUsersAtDistance(2); // All users exactly 2 hops away
 
-// Get distance distribution from root
+// Get distance distribution from root (requires root to be set)
 const distribution = await analyzer.getDistanceDistribution(); // {1: 150, 2: 2500, ...}
 ```
 

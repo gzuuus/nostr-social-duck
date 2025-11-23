@@ -33,33 +33,23 @@ import {
   getUsersAtDistanceFromRoot,
   getUsersWithinDistanceFromRoot,
   getRootDistanceDistribution,
+  getDistancesFromRootBatch,
+  getDistancesBatchBidirectional,
 } from "./graph-analysis.js";
 import { normalizePubkey } from "./parser.js";
+import { executeWithRetry } from "./utils.js";
 
 /**
  * DuckDB-based Social Graph Analyzer for Nostr Kind 3 events
  *
  * This class provides the main API for analyzing social graphs from Nostr follow lists.
  * It uses DuckDB for efficient graph traversal and analysis.
- *
- * @example
- * ```typescript
- * // Create an in-memory analyzer
- * const analyzer = await DuckDBSocialGraphAnalyzer.create();
- *
- * // Ingest events
- * await analyzer.ingestEvents(kind3Events);
- *
- * // Find shortest path
- * const path = await analyzer.getShortestPath(fromPubkey, toPubkey);
- *
- * // Clean up
- * await analyzer.close();
- * ```
  */
-export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
+export class DuckDBSocialGraphAnalyzer
+  implements ISocialGraphAnalyzer, AsyncDisposable
+{
   private instance: DuckDBInstance | null = null;
-  private connection: DuckDBConnection | null = null;
+  private connection: DuckDBConnection;
   private maxDepth: number;
   private closed: boolean = false;
   private rootPubkey: string | null = null;
@@ -70,7 +60,7 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    */
   private constructor(
     instance: DuckDBInstance | null,
-    connection: DuckDBConnection | null,
+    connection: DuckDBConnection,
     maxDepth: number,
   ) {
     this.instance = instance;
@@ -84,16 +74,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param config - Configuration options
    * @returns Promise resolving to a new analyzer instance
    *
-   * @example
-   * ```typescript
-   * // In-memory database
-   * const analyzer = await DuckDBSocialGraphAnalyzer.create();
-   *
-   * // Persistent database
-   * const analyzer = await DuckDBSocialGraphAnalyzer.create({
-   *   dbPath: './social-graph.db'
-   * });
-   * ```
    */
   static async create(
     config: SocialGraphConfig = {},
@@ -103,12 +83,18 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     // Initialize database
     const instance = await initializeDatabase(dbPath);
 
-    // Create analyzer instance
-    const analyzer = new DuckDBSocialGraphAnalyzer(instance, null, maxDepth);
+    // Get connection first
+    const connection = await instance.connect();
 
-    // Get connection and setup schema
-    await analyzer.ensureConnection();
-    await setupSchema(analyzer.connection!);
+    // Create analyzer instance with established connection
+    const analyzer = new DuckDBSocialGraphAnalyzer(
+      instance,
+      connection,
+      maxDepth,
+    );
+
+    // Setup schema
+    await setupSchema(connection);
 
     // Set root pubkey if provided
     if (rootPubkey) {
@@ -128,15 +114,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param maxDepth - Maximum search depth for paths (default: 6)
    * @returns Promise resolving to a new analyzer instance
    *
-   * @example
-   * ```typescript
-   * // Use existing connection
-   * const connection = await myInstance.connect();
-   * const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection);
-   *
-   * // Use with custom maxDepth
-   * const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 10);
-   * ```
    */
   static async connect(
     connection: DuckDBConnection,
@@ -158,49 +135,16 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
   }
 
   /**
-   * Ensures a database connection is available
-   * @private
-   */
-  private async ensureConnection(): Promise<void> {
-    if (this.closed) {
-      throw new Error("Analyzer has been closed");
-    }
-
-    if (!this.connection) {
-      if (!this.instance) {
-        throw new Error(
-          "No database instance available - use connect() method for external connections",
-        );
-      }
-      this.connection = await this.instance.connect();
-    }
-  }
-
-  /**
    * Ingests a single Kind 3 Nostr event into the graph
    *
    * @param event - The Nostr Kind 3 event to ingest
    * @throws Error if the event is invalid or the analyzer is closed
-   *
-   * @example
-   * ```typescript
-   * await analyzer.ingestEvent({
-   *   id: "event123...",
-   *   pubkey: "pubkey123...",
-   *   kind: 3,
-   *   created_at: 1234567890,
-   *   tags: [
-   *     ["p", "followed_pubkey1..."],
-   *     ["p", "followed_pubkey2..."]
-   *   ],
-   *   content: "",
-   *   sig: "signature..."
-   * });
-   * ```
    */
   async ingestEvent(event: NostrEvent): Promise<void> {
-    await this.ensureConnection();
-    await ingestSingleEvent(this.connection!, event);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    await ingestSingleEvent(this.connection, event);
 
     // Mark root table as invalid since the graph has changed
     if (this.rootPubkey) {
@@ -217,14 +161,12 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param events - Array of Nostr Kind 3 events to ingest
    * @throws Error if any event is invalid or the analyzer is closed
    *
-   * @example
-   * ```typescript
-   * await analyzer.ingestEvents([event1, event2, event3]);
-   * ```
    */
   async ingestEvents(events: NostrEvent[]): Promise<void> {
-    await this.ensureConnection();
-    await ingestMultipleEvents(this.connection!, events);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    await ingestMultipleEvents(this.connection, events);
 
     // Mark root table as invalid since the graph has changed
     if (this.rootPubkey) {
@@ -243,27 +185,17 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param maxDepth - Maximum search depth (defaults to analyzer's maxDepth)
    * @returns Promise resolving to the shortest path, or null if no path exists
    *
-   * @example
-   * ```typescript
-   * const path = await analyzer.getShortestPath(
-   *   "abc123...",
-   *   "def456..."
-   * );
-   *
-   * if (path) {
-   *   console.log(`Distance: ${path.distance}`);
-   *   console.log(`Path: ${path.path.join(' -> ')}`);
-   * }
-   * ```
    */
   async getShortestPath(
     fromPubkey: string,
     toPubkey: string,
     maxDepth?: number,
   ): Promise<SocialPath | null> {
-    await this.ensureConnection();
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
     const depth = maxDepth ?? this.maxDepth;
-    return findShortestPath(this.connection!, fromPubkey, toPubkey, depth);
+    return findShortestPath(this.connection, fromPubkey, toPubkey, depth);
   }
 
   /**
@@ -277,24 +209,15 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param maxDepth - Maximum search depth (defaults to analyzer's maxDepth)
    * @returns Promise resolving to the distance, or null if no path exists
    *
-   * @example
-   * ```typescript
-   * const distance = await analyzer.getShortestDistance(
-   *   "abc123...",
-   *   "def456..."
-   * );
-   *
-   * if (distance !== null) {
-   *   console.log(`Distance: ${distance} hops`);
-   * }
-   * ```
    */
   async getShortestDistance(
     fromPubkey: string,
     toPubkey: string,
     maxDepth?: number,
   ): Promise<number | null> {
-    await this.ensureConnection();
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
     const depth = maxDepth ?? this.maxDepth;
     const normalizedFrom = normalizePubkey(fromPubkey);
 
@@ -303,17 +226,59 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
       // Rebuild table if invalid
       if (!this.rootTableValid) {
         await buildRootDistancesTable(
-          this.connection!,
+          this.connection,
           this.rootPubkey,
           this.maxDepth,
         );
         this.rootTableValid = true;
       }
-      return getDistanceFromRoot(this.connection!, toPubkey);
+      return getDistanceFromRoot(this.connection, toPubkey);
     }
 
     // Otherwise, use the standard bidirectional search
-    return findShortestDistance(this.connection!, fromPubkey, toPubkey, depth);
+    return findShortestDistance(this.connection, fromPubkey, toPubkey, depth);
+  }
+
+  /**
+   * Gets the shortest distances from a source pubkey to multiple target pubkeys in batch
+   *
+   * This method optimizes distance calculations by leveraging batch operations,
+   * which can be particularly efficient when a root is specified and the root table is available.
+   * It handles both optimized root-based lookups and standard bidirectional search for non-root queries.
+   *
+   * @param fromPubkey - Starting pubkey (64-character hex string)
+   * @param toPubkeys - Array of target pubkeys to calculate distances to
+   * @param maxDepth - Maximum search depth (defaults to analyzer's maxDepth)
+   * @returns Promise resolving to a map of target pubkey -> distance, or null if no path exists
+   *
+   */
+  async getShortestDistancesBatch(
+    fromPubkey: string,
+    toPubkeys: string[],
+  ): Promise<Map<string, number | null>> {
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    const normalizedFrom = normalizePubkey(fromPubkey);
+
+    if (this.rootPubkey && normalizedFrom === this.rootPubkey) {
+      if (!this.rootTableValid) {
+        await buildRootDistancesTable(
+          this.connection,
+          this.rootPubkey,
+          this.maxDepth,
+        );
+        this.rootTableValid = true;
+      }
+      return getDistancesFromRootBatch(this.connection, toPubkeys);
+    }
+
+    return getDistancesBatchBidirectional(
+      this.connection,
+      fromPubkey,
+      toPubkeys,
+      this.maxDepth,
+    );
   }
 
   /**
@@ -326,21 +291,14 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param distance - Maximum distance (number of hops) to search
    * @returns Promise resolving to array of pubkeys (excluding the starting pubkey)
    *
-   * @example
-   * ```typescript
-   * // Get all users within 2 hops from a pubkey
-   * const nearbyUsers = await analyzer.getUsersWithinDistance(
-   *   "abc123...",
-   *   2
-   * );
-   * // Returns: ["def456...", "ghi789...", ...]
-   * ```
    */
   async getUsersWithinDistance(
     fromPubkey: string,
     distance: number,
   ): Promise<string[] | null> {
-    await this.ensureConnection();
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
     const normalizedFrom = normalizePubkey(fromPubkey);
 
     // Hybrid approach: Use optimized table if querying from root pubkey
@@ -348,17 +306,17 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
       // Rebuild table if invalid
       if (!this.rootTableValid) {
         await buildRootDistancesTable(
-          this.connection!,
+          this.connection,
           this.rootPubkey,
           this.maxDepth,
         );
         this.rootTableValid = true;
       }
-      return getUsersWithinDistanceFromRoot(this.connection!, distance);
+      return getUsersWithinDistanceFromRoot(this.connection, distance);
     }
 
     // Fallback to standard recursive CTE for other pubkeys
-    return getUsersWithinDistance(this.connection!, fromPubkey, distance);
+    return getUsersWithinDistance(this.connection, fromPubkey, distance);
   }
 
   /**
@@ -370,7 +328,9 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @returns Promise resolving to array of pubkeys
    */
   async getUsersAtDistance(distance: number): Promise<string[]> {
-    await this.ensureConnection();
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
 
     if (!this.rootPubkey) {
       throw new Error("Root pubkey must be set to use getUsersAtDistance");
@@ -379,14 +339,14 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     // Rebuild table if invalid
     if (!this.rootTableValid) {
       await buildRootDistancesTable(
-        this.connection!,
+        this.connection,
         this.rootPubkey,
         this.maxDepth,
       );
       this.rootTableValid = true;
     }
 
-    return getUsersAtDistanceFromRoot(this.connection!, distance);
+    return getUsersAtDistanceFromRoot(this.connection, distance);
   }
 
   /**
@@ -397,7 +357,9 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @returns Promise resolving to a map of distance -> count
    */
   async getDistanceDistribution(): Promise<Record<number, number>> {
-    await this.ensureConnection();
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
 
     if (!this.rootPubkey) {
       throw new Error("Root pubkey must be set to use getDistanceDistribution");
@@ -406,14 +368,14 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     // Rebuild table if invalid
     if (!this.rootTableValid) {
       await buildRootDistancesTable(
-        this.connection!,
+        this.connection,
         this.rootPubkey,
         this.maxDepth,
       );
       this.rootTableValid = true;
     }
 
-    return getRootDistanceDistribution(this.connection!);
+    return getRootDistanceDistribution(this.connection);
   }
 
   /**
@@ -424,15 +386,12 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    *
    * @returns Promise resolving to array of all unique pubkeys in the graph
    *
-   * @example
-   * ```typescript
-   * const allPubkeys = await analyzer.getAllUniquePubkeys();
-   * console.log(`Total unique pubkeys in graph: ${allPubkeys.length}`);
-   * ```
    */
   async getAllUniquePubkeys(): Promise<string[]> {
-    await this.ensureConnection();
-    return getAllUniquePubkeys(this.connection!);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    return getAllUniquePubkeys(this.connection);
   }
 
   /**
@@ -448,8 +407,10 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * ```
    */
   async getStats(): Promise<GraphStats> {
-    await this.ensureConnection();
-    return getTableStats(this.connection!);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    return getTableStats(this.connection);
   }
 
   /**
@@ -458,15 +419,12 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param pubkey - The pubkey to check
    * @returns Promise resolving to true if the pubkey exists
    *
-   * @example
-   * ```typescript
-   * const exists = await analyzer.pubkeyExists("abc123...");
-   * console.log(`Pubkey exists in graph: ${exists}`);
-   * ```
    */
   async pubkeyExists(pubkey: string): Promise<boolean> {
-    await this.ensureConnection();
-    return pubkeyExists(this.connection!, pubkey);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    return pubkeyExists(this.connection, pubkey);
   }
 
   /**
@@ -476,21 +434,15 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param followedPubkey - The followed pubkey
    * @returns Promise resolving to true if the relationship exists
    *
-   * @example
-   * ```typescript
-   * const isFollowing = await analyzer.isDirectFollow(
-   *   "followerPubkey...",
-   *   "followedPubkey..."
-   * );
-   * console.log(`Direct follow exists: ${isFollowing}`);
-   * ```
    */
   async isDirectFollow(
     followerPubkey: string,
     followedPubkey: string,
   ): Promise<boolean> {
-    await this.ensureConnection();
-    return isDirectFollow(this.connection!, followerPubkey, followedPubkey);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    return isDirectFollow(this.connection, followerPubkey, followedPubkey);
   }
 
   /**
@@ -500,18 +452,12 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param pubkey2 - Second pubkey
    * @returns Promise resolving to true if they mutually follow each other
    *
-   * @example
-   * ```typescript
-   * const areMutual = await analyzer.areMutualFollows(
-   *   "pubkey1...",
-   *   "pubkey2..."
-   * );
-   * console.log(`Mutual follows: ${areMutual}`);
-   * ```
    */
   async areMutualFollows(pubkey1: string, pubkey2: string): Promise<boolean> {
-    await this.ensureConnection();
-    return areMutualFollows(this.connection!, pubkey1, pubkey2);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    return areMutualFollows(this.connection, pubkey1, pubkey2);
   }
 
   /**
@@ -520,17 +466,14 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param pubkey - The pubkey to check
    * @returns Promise resolving to object with outDegree (following) and inDegree (followers)
    *
-   * @example
-   * ```typescript
-   * const degree = await analyzer.getPubkeyDegree("pubkey123...");
-   * console.log(`Following: ${degree.outDegree}, Followers: ${degree.inDegree}`);
-   * ```
    */
   async getPubkeyDegree(
     pubkey: string,
   ): Promise<{ outDegree: number; inDegree: number }> {
-    await this.ensureConnection();
-    return getPubkeyDegree(this.connection!, pubkey);
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    return getPubkeyDegree(this.connection, pubkey);
   }
 
   /**
@@ -538,10 +481,6 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    *
    * After calling this method, the analyzer cannot be used anymore.
    *
-   * @example
-   * ```typescript
-   * await analyzer.close();
-   * ```
    */
   async close(): Promise<void> {
     if (this.closed) {
@@ -556,17 +495,21 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
     // Reclaim space before closing - only when we own the connection
     // CHECKPOINT is only called when we created the database instance ourselves
     // to avoid conflicts with other transactions in external projects
-    if (this.connection && this.instance) {
-      await this.connection.run("CHECKPOINT");
-    }
-
-    // Only close connection if we own it (created via create(), not connect())
-    if (this.connection && this.instance) {
+    if (this.instance) {
+      await executeWithRetry(async () => {
+        await this.connection.run("CHECKPOINT");
+      });
       this.connection.closeSync();
-      this.connection = null;
     }
 
     this.closed = true;
+  }
+
+  /**
+   * Implementation of AsyncDisposable for 'await using' syntax
+   */
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
   }
 
   /**
@@ -609,13 +552,15 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @param pubkey - The root pubkey to optimize for
    */
   async setRootPubkey(pubkey: string): Promise<void> {
-    await this.ensureConnection();
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
     const normalizedPubkey = normalizePubkey(pubkey);
     this.rootPubkey = normalizedPubkey;
 
     // Build the temporary table with pre-calculated distances
     await buildRootDistancesTable(
-      this.connection!,
+      this.connection,
       normalizedPubkey,
       this.maxDepth,
     );
@@ -636,15 +581,15 @@ export class DuckDBSocialGraphAnalyzer implements ISocialGraphAnalyzer {
    * @private
    */
   private async clearRootDistances(): Promise<void> {
-    if (this.connection) {
-      try {
+    try {
+      await executeWithRetry(async () => {
         await this.connection.run(`
           DROP TABLE IF EXISTS nsd_root_distances
         `);
-      } catch (error) {
-        console.error("Error clearing root distances table:", error);
-        // Ignore errors if table doesn't exist
-      }
+      });
+    } catch (error) {
+      console.error("Error clearing root distances table:", error);
+      // Ignore errors if table doesn't exist
     }
     this.rootPubkey = null;
     this.rootTableValid = false;
