@@ -1,6 +1,6 @@
 # Nostr Social Duck 🦆
 
-A high-performance TypeScript library for analyzing Nostr social graphs using DuckDB. Efficiently compute shortest paths and analyze follow relationships from Nostr Kind 3 events.
+A high-performance TypeScript library for analyzing Nostr social graphs using DuckDB. Efficiently compute shortest distances and analyze follow relationships from Nostr Kind 3 events.
 
 ## Features
 
@@ -10,6 +10,8 @@ A high-performance TypeScript library for analyzing Nostr social graphs using Du
 - 💾 **Flexible Storage** - In-memory or persistent database options
 - 🎯 **Type-Safe** - Full TypeScript support with comprehensive types
 - ⚡ **Root Pubkey Optimization** - Pre-computed distances for O(1) lookups
+- 🔄 **Batch Operations** - Efficient multi-pubkey distance calculations
+- 📈 **Advanced Analytics** - Degree analysis, mutual follows, distance distributions
 
 ## Installation
 
@@ -50,6 +52,29 @@ console.log(`Total follows: ${stats.totalFollows}`);
 await analyzer.close();
 ```
 
+## Advanced Usage with Root Pubkey Optimization
+
+For applications that frequently query distances from a specific pubkey (like your own), use the root pubkey optimization for O(1) lookups:
+
+```typescript
+// Set the root pubkey
+await analyzer.setRootPubkey("root_pubkey...");
+
+// Now distance queries from your pubkey are extremely fast
+const distance = await analyzer.getShortestDistance(
+  "your_pubkey...",
+  "target_pubkey...",
+);
+// O(1) lookup when querying from the root
+
+// Get all users exactly 2 hops away
+const usersAtDistance = await analyzer.getUsersAtDistance(2);
+
+// Get distance distribution from your pubkey
+const distribution = await analyzer.getDistanceDistribution();
+console.log(distribution); // {1: 150, 2: 2500, 3: 12000, ...}
+```
+
 ## API Reference
 
 ### Creating an Analyzer
@@ -61,7 +86,11 @@ const analyzer = await DuckDBSocialGraphAnalyzer.create();
 // Persistent database
 const analyzer = await DuckDBSocialGraphAnalyzer.create({
   dbPath: "./social-graph.db",
-  maxDepth: 6, // Maximum search depth for paths (Optional, default: 6)
+});
+
+// With root pubkey optimization from the start
+const analyzer = await DuckDBSocialGraphAnalyzer.create({
+  rootPubkey: "your_pubkey...",
 });
 ```
 
@@ -70,10 +99,7 @@ const analyzer = await DuckDBSocialGraphAnalyzer.create({
 ```typescript
 // Connect to existing DuckDB instance
 const connection = await myInstance.connect();
-const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 6);
-
-// Use with custom maxDepth
-const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection, 10);
+const analyzer = await DuckDBSocialGraphAnalyzer.connect(connection);
 ```
 
 **Note:** When using `connect()`, the analyzer won't close the connection when you call `close()`, allowing you to reuse the connection for other purposes.
@@ -104,22 +130,22 @@ await analyzer.ingestEvents([event1, event2, event3]);
 
 ```typescript
 // Find shortest path (returns full path details)
-const path = await analyzer.getShortestPath(
-  fromPubkey,
-  toPubkey,
-  maxDepth, // optional, defaults to analyzer's maxDepth
-);
+const path = await analyzer.getShortestPath(fromPubkey, toPubkey);
 
 // Returns: { path: string[], distance: number } | null
 
 // Find shortest distance only (2-3x faster)
-const distance = await analyzer.getShortestDistance(
-  fromPubkey,
-  toPubkey,
-  maxDepth, // optional, defaults to analyzer's maxDepth
-);
+const distance = await analyzer.getShortestDistance(fromPubkey, toPubkey);
 
 // Returns: number | null - the distance in hops, or null if no path exists
+
+// Batch distance calculations (optimized for multiple targets)
+const distances = await analyzer.getShortestDistancesBatch(fromPubkey, [
+  "target1...",
+  "target2...",
+  "target3...",
+]);
+// Returns: Map<string, number | null> - map of target pubkey -> distance
 ```
 
 ### Finding Users Within Distance
@@ -135,79 +161,40 @@ const users = await analyzer.getUsersWithinDistance(
 // or null if the starting pubkey doesn't exist in the graph
 ```
 
-### Graph Statistics
+### Graph Statistics and Analysis
 
 ```typescript
+// Get comprehensive graph statistics
 const stats = await analyzer.getStats();
 // Returns: {
 //   totalFollows: number,
 //   uniqueFollowers: number,
 //   uniqueFollowed: number,
-//   uniqueEvents: number
 // }
-```
 
-### Getting All Unique Pubkeys
-
-```typescript
-// Get all unique pubkeys in the social graph (both followers and followed)
+// Get all unique pubkeys in the social graph
 const allPubkeys = await analyzer.getAllUniquePubkeys();
 
-// Returns: string[] - array of all unique pubkeys in the graph
-```
-
-### Additional Graph Analysis Methods
-
-```typescript
-// Check if a pubkey exists in the graph (as follower or followed)
+// Check if a pubkey exists in the graph
 const exists = await analyzer.pubkeyExists(pubkey);
-// Returns: boolean
 
 // Check if a direct follow relationship exists
 const isFollowing = await analyzer.isDirectFollow(
   followerPubkey,
   followedPubkey,
 );
-// Returns: boolean
 
 // Check if two pubkeys mutually follow each other
 const areMutual = await analyzer.areMutualFollows(pubkey1, pubkey2);
-// Returns: boolean
 
 // Get the degree (number of follows) for a pubkey
 const degree = await analyzer.getPubkeyDegree(pubkey);
 // Returns: { outDegree: number, inDegree: number }
-
-// Get all unique pubkeys in the social graph (both followers and followed)
-const allPubkeys = await analyzer.getAllUniquePubkeys();
-// Returns: string[] - array of all unique pubkeys in the graph
-
-// Find the shortest distance between two pubkeys (performance-optimized)
-const distance = await analyzer.getShortestDistance(
-  fromPubkey,
-  toPubkey,
-  maxDepth,
-);
-// Returns: number | null - distance in hops, or null if no path exists
-// Note: This is 2-3x faster than getShortestPath for multi-hop paths
-
-// Root pubkey optimization for high-frequency queries
-await analyzer.setRootPubkey("your_pubkey..."); // Pre-compute distances (stateful optimization)
-const rootDistance = await analyzer.getShortestDistance(
-  "your_pubkey...",
-  "target_pubkey...",
-); // O(1) lookup when querying from the root
-
-// Get users at specific distance from root (requires root to be set)
-const usersAtDistance = await analyzer.getUsersAtDistance(2); // All users exactly 2 hops away
-
-// Get distance distribution from root (requires root to be set)
-const distribution = await analyzer.getDistanceDistribution(); // {1: 150, 2: 2500, ...}
 ```
 
 ## Data Model
 
-The library uses a simple, efficient schema:
+The library uses a simple, efficient schema optimized for graph traversal:
 
 ```sql
 CREATE TABLE nsd_follows (
@@ -218,30 +205,6 @@ CREATE TABLE nsd_follows (
     PRIMARY KEY (follower_pubkey, followed_pubkey, event_id)
 );
 ```
-
-With strategic indexes for optimal graph traversal:
-
-- `idx_nsd_follows_follower` - For outgoing edges
-- `idx_nsd_follows_followed` - For incoming edges
-- `idx_nsd_follows_compound` - For efficient lookups
-
-## Architecture
-
-### Core Components
-
-- **Parser** ([`src/parser.ts`](src/parser.ts)) - NIP-02 compliant event parsing
-- **Database** ([`src/database.ts`](src/database.ts)) - Schema and index management
-- **Ingestion** ([`src/ingestion.ts`](src/ingestion.ts)) - Event processing with deduplication
-- **Graph Analysis** ([`src/graph-analysis.ts`](src/graph-analysis.ts)) - Shortest path algorithms
-- **Analyzer** ([`src/analyzer.ts`](src/analyzer.ts)) - Main public API
-
-### Key Optimizations
-
-1. **USING KEY in Recursive CTEs** - Prevents redundant path exploration
-2. **Chunked Batch Inserts** - Handles large follow lists efficiently (500 items per chunk)
-3. **Early Existence Checks** - Avoids expensive queries for non-existent nodes
-4. **Strategic Indexes** - Optimized for both forward and backward graph traversal
-5. **Cycle Prevention** - Uses `list_contains` to avoid infinite loops
 
 ## Nostr Protocol Compliance
 
@@ -270,13 +233,21 @@ This library supports all major platforms through DuckDB's native bindings:
 
 **This library is NOT intended for browser use** - it requires native DuckDB bindings that are only available in Node.js/Bun.js environments.
 
+## Performance Tips
+
+1. **Use Root Pubkey Optimization**: If you frequently query distances from a specific pubkey, set it as the root for O(1) lookups.
+
+2. **Use [`getShortestDistance()`](src/analyzer.ts:213) for Distance-Only Queries**: This is 2-3x faster than [`getShortestPath()`](src/analyzer.ts:189) when you only need the distance.
+
+3. **Batch Distance Calculations**: Use [`getShortestDistancesBatch()`](src/analyzer.ts:255) for multiple distance queries from the same source.
+
 ## License
 
 MIT
 
 ## Contributing
 
-Contributions welcome! Please read our contributing guidelines and submit PRs.
+Contributions welcome! Please submit PRs.
 
 ## Acknowledgments
 
@@ -284,12 +255,6 @@ Contributions welcome! Please read our contributing guidelines and submit PRs.
 - Implements [Nostr](https://nostr.com/) protocol specifications
 - Inspired by the need for efficient social graph analysis in decentralized networks
 
-## Links
-
-- [DuckDB Documentation](https://duckdb.org/docs/)
-- [Nostr Protocol](https://github.com/nostr-protocol/nips)
-- [NIP-02 Specification](https://github.com/nostr-protocol/nips/blob/master/02.md)
-
 ---
 
-Made with 🦆 and ⚡ by the Nostr community
+Made with 🦆 and 💛
