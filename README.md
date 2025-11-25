@@ -11,9 +11,11 @@ A high-performance TypeScript library for analyzing Nostr social graphs using Du
 - 🔄 **NIP-02 Compliant** - Properly implements "latest event wins" semantics
 - 💾 **Flexible Storage** - In-memory or persistent database options
 - 🎯 **Type-Safe** - Full TypeScript support with comprehensive types
-- ⚡ **Root Pubkey Optimization** - Pre-computed distances for O(1) lookups
+- ⚡ **Root Pubkey Optimization** - Pre-computed distances for O(1) lookups with persistent tables
+- 🔄 **Delta Updates** - Incremental updates to root distances without full rebuilds
 - 🔄 **Batch Operations** - Efficient multi-pubkey distance calculations
 - 📈 **Advanced Analytics** - Degree analysis, mutual follows, distance distributions
+- 💾 **Persistent Tables** - Root distances survive analyzer sessions in persistent databases
 
 ## Installation
 
@@ -75,6 +77,46 @@ const usersAtDistance = await analyzer.getUsersAtDistance(2);
 // Get distance distribution from your pubkey
 const distribution = await analyzer.getDistanceDistribution();
 console.log(distribution); // {1: 150, 2: 2500, 3: 12000, ...}
+```
+
+### Persistent Root Tables and Delta Updates
+
+The root optimization now uses **persistent tables** that survive analyzer sessions when using persistent databases. This means:
+
+- **Faster restarts**: Root tables are reused if the same root pubkey and maxDepth are configured
+- **Delta updates**: When new events are ingested, the root distances table is incrementally updated instead of being rebuilt from scratch
+- **Explicit management**: You have full control over when to rebuild or drop the root table
+
+```typescript
+// The root table is automatically reused when reconnecting to the same database
+const analyzer1 = await DuckDBSocialGraphAnalyzer.create({
+  dbPath: "./social-graph.db",
+  rootPubkey: "your_pubkey...",
+});
+
+// Later, when creating a new analyzer with the same database
+const analyzer2 = await DuckDBSocialGraphAnalyzer.create({
+  dbPath: "./social-graph.db",
+  rootPubkey: "your_pubkey...", // Table will be reused, not rebuilt
+});
+
+// Explicit table management
+await analyzer.rebuildRootDistances(); // Force full rebuild
+await analyzer.dropRootDistances(); // Remove the table completely
+```
+
+### Delta Update Performance
+
+Delta updates provide significant performance improvements for incremental data ingestion:
+
+```typescript
+// Initial setup
+await analyzer.setRootPubkey("your_pubkey...");
+await analyzer.ingestEvents(initialEvents); // Builds root table
+
+// Subsequent updates use delta updates (much faster)
+await analyzer.ingestEvents(newEvents); // Incrementally updates root table
+await analyzer.ingestEvent(singleEvent); // Also uses delta updates
 ```
 
 ## API Reference
@@ -202,9 +244,20 @@ The library uses a simple, efficient schema optimized for graph traversal:
 CREATE TABLE nsd_follows (
     follower_pubkey VARCHAR(64) NOT NULL,
     followed_pubkey VARCHAR(64) NOT NULL,
-    event_id VARCHAR(64) NOT NULL,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY (follower_pubkey, followed_pubkey, event_id)
+    PRIMARY KEY (follower_pubkey, followed_pubkey)
+);
+
+-- Persistent root distances table for O(1) lookups
+CREATE TABLE nsd_root_distances (
+    pubkey VARCHAR(64) PRIMARY KEY,
+    distance INTEGER NOT NULL
+);
+
+-- Metadata table for tracking root optimization state
+CREATE TABLE nsd_metadata (
+    key VARCHAR(64) PRIMARY KEY,
+    value VARCHAR(255)
 );
 ```
 
@@ -237,11 +290,41 @@ This library supports all major platforms through DuckDB's native bindings:
 
 ## Performance Tips
 
-1. **Use Root Pubkey Optimization**: If you frequently query distances from a specific pubkey, set it as the root for O(1) lookups.
+1. **Use Root Pubkey Optimization**: If you frequently query distances from a specific pubkey, set it as the root for O(1) lookups. The table is now persistent and supports delta updates.
 
 2. **Use [`getShortestDistance()`](src/analyzer.ts:213) for Distance-Only Queries**: This is 2-3x faster than [`getShortestPath()`](src/analyzer.ts:189) when you only need the distance.
 
 3. **Batch Distance Calculations**: Use [`getShortestDistancesBatch()`](src/analyzer.ts:255) for multiple distance queries from the same source.
+
+4. **Leverage Delta Updates**: When using persistent databases, the root table is incrementally updated as new events are ingested, avoiding expensive full rebuilds.
+
+5. **Reuse Persistent Tables**: When reconnecting to the same database, the root table is automatically reused if the root pubkey and maxDepth match, providing instant optimization.
+
+## API Reference Updates
+
+### New Methods for Root Table Management
+
+```typescript
+/**
+ * Rebuilds the root distances table from scratch
+ * Useful when you want to ensure the table is completely up-to-date
+ */
+rebuildRootDistances(): Promise<void>
+
+/**
+ * Drops the root distances table explicitly
+ * This is now an explicit operation instead of automatic cleanup
+ */
+dropRootDistances(): Promise<void>
+```
+
+### Enhanced Root Pubkey Optimization
+
+The [`setRootPubkey()`](src/analyzer.ts:575) method now:
+
+- Reuses existing root tables when possible (same pubkey and maxDepth)
+- Supports persistent tables that survive analyzer sessions
+- Automatically applies delta updates when new events are ingested
 
 ## License
 

@@ -35,6 +35,9 @@ import {
   getRootDistanceDistribution,
   getDistancesFromRootBatch,
   getDistancesBatchBidirectional,
+  updateRootDistancesDelta,
+  getMetadataValue,
+  setMetadataValue,
 } from "./graph-analysis.js";
 import { normalizePubkey } from "./parser.js";
 import { executeWithRetry } from "./utils.js";
@@ -146,9 +149,17 @@ export class DuckDBSocialGraphAnalyzer
     }
     await ingestSingleEvent(this.connection, event);
 
-    // Mark root table as invalid since the graph has changed
-    if (this.rootPubkey) {
-      this.rootTableValid = false;
+    // Update root distances with delta if table is valid
+    if (this.rootPubkey && this.rootTableValid) {
+      try {
+        await updateRootDistancesDelta(this.connection, [event.pubkey]);
+      } catch (error) {
+        console.error(
+          "Delta update failed, marking root table as invalid:",
+          error,
+        );
+        this.rootTableValid = false;
+      }
     }
   }
 
@@ -168,9 +179,21 @@ export class DuckDBSocialGraphAnalyzer
     }
     await ingestMultipleEvents(this.connection, events);
 
-    // Mark root table as invalid since the graph has changed
-    if (this.rootPubkey) {
-      this.rootTableValid = false;
+    // Update root distances with delta if table is valid
+    if (this.rootPubkey && this.rootTableValid) {
+      try {
+        // Get unique pubkeys that were updated (deduplicate by pubkey)
+        const updatedPubkeys = [
+          ...new Set(events.map((event) => event.pubkey)),
+        ];
+        await updateRootDistancesDelta(this.connection, updatedPubkeys);
+      } catch (error) {
+        console.error(
+          "Delta update failed, marking root table as invalid:",
+          error,
+        );
+        this.rootTableValid = false;
+      }
     }
   }
 
@@ -487,10 +510,8 @@ export class DuckDBSocialGraphAnalyzer
       return;
     }
 
-    // Clear the root distances table
-    if (this.rootPubkey) {
-      await this.clearRootDistances();
-    }
+    // Note: We no longer automatically clear the root distances table
+    // The table is now persistent and must be explicitly dropped if needed
 
     // Reclaim space before closing - only when we own the connection
     // CHECKPOINT is only called when we created the database instance ourselves
@@ -556,15 +577,36 @@ export class DuckDBSocialGraphAnalyzer
       throw new Error("Analyzer has been closed");
     }
     const normalizedPubkey = normalizePubkey(pubkey);
-    this.rootPubkey = normalizedPubkey;
 
-    // Build the temporary table with pre-calculated distances
-    await buildRootDistancesTable(
+    // Check if we can reuse the existing table
+    const existingRootPubkey = await getMetadataValue(
       this.connection,
-      normalizedPubkey,
-      this.maxDepth,
+      "root_pubkey",
     );
-    this.rootTableValid = true;
+    const existingRootDepth = await getMetadataValue(
+      this.connection,
+      "root_depth",
+    );
+    const tableExists = await this.rootTableExists();
+
+    if (
+      existingRootPubkey === normalizedPubkey &&
+      existingRootDepth === String(this.maxDepth) &&
+      tableExists
+    ) {
+      // Reuse existing table
+      this.rootPubkey = normalizedPubkey;
+      this.rootTableValid = true;
+    } else {
+      // Build new table
+      this.rootPubkey = normalizedPubkey;
+      await buildRootDistancesTable(
+        this.connection,
+        normalizedPubkey,
+        this.maxDepth,
+      );
+      this.rootTableValid = true;
+    }
   }
 
   /**
@@ -577,20 +619,63 @@ export class DuckDBSocialGraphAnalyzer
   }
 
   /**
-   * Clears the temporary root distances table
+   * Checks if the root distances table exists
    * @private
    */
-  private async clearRootDistances(): Promise<void> {
+  private async rootTableExists(): Promise<boolean> {
+    try {
+      const reader = await this.connection.runAndReadAll(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'nsd_root_distances'",
+      );
+      return reader.getRows().length > 0;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Rebuilds the root distances table from scratch
+   * Useful when you want to ensure the table is completely up-to-date
+   */
+  async rebuildRootDistances(): Promise<void> {
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+    if (!this.rootPubkey) {
+      throw new Error("Root pubkey must be set to rebuild root distances");
+    }
+
+    await buildRootDistancesTable(
+      this.connection,
+      this.rootPubkey,
+      this.maxDepth,
+    );
+    this.rootTableValid = true;
+  }
+
+  /**
+   * Drops the root distances table explicitly
+   * This is now an explicit operation instead of automatic cleanup
+   */
+  async dropRootDistances(): Promise<void> {
+    if (this.closed) {
+      throw new Error("Analyzer has been closed");
+    }
+
     try {
       await executeWithRetry(async () => {
-        await this.connection.run(`
-          DROP TABLE IF EXISTS nsd_root_distances
-        `);
+        await this.connection.run("DROP TABLE IF EXISTS nsd_root_distances");
       });
     } catch (error) {
-      console.error("Error clearing root distances table:", error);
+      console.error("Error dropping root distances table:", error);
       // Ignore errors if table doesn't exist
     }
+
+    // Clear metadata
+    await setMetadataValue(this.connection, "root_pubkey", "");
+    await setMetadataValue(this.connection, "root_depth", "");
+    await setMetadataValue(this.connection, "root_built_at", "");
+
     this.rootPubkey = null;
     this.rootTableValid = false;
   }

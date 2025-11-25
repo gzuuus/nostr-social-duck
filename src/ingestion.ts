@@ -99,6 +99,14 @@ export async function ingestEvent(
       throw error;
     }
   });
+
+  // Update metadata to track graph changes
+  await executeWithRetry(async () => {
+    await connection.run(
+      `INSERT OR REPLACE INTO nsd_metadata (key, value) VALUES ('graph_updated_at', ?)`,
+      [String(Date.now())],
+    );
+  });
 }
 
 /**
@@ -161,6 +169,14 @@ export async function ingestEvents(
   console.log(
     `Ingestion completed: ${latestEventsByPubkey.size} events processed`,
   );
+
+  // Update metadata to track graph changes
+  await executeWithRetry(async () => {
+    await connection.run(
+      `INSERT OR REPLACE INTO nsd_metadata (key, value) VALUES ('graph_updated_at', ?)`,
+      [String(Date.now())],
+    );
+  });
 }
 
 /**

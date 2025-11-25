@@ -19,6 +19,16 @@ CREATE TABLE IF NOT EXISTS nsd_follows (
 `;
 
 /**
+ * SQL to create metadata table for tracking root optimization state
+ */
+const CREATE_METADATA_TABLE = `
+CREATE TABLE IF NOT EXISTS nsd_metadata (
+    key VARCHAR(64) PRIMARY KEY,
+    value VARCHAR(255)
+);
+`;
+
+/**
  * SQL to create indexes for efficient graph traversal
  */
 const CREATE_INDEXES = `
@@ -49,6 +59,7 @@ export async function setupSchema(connection: DuckDBConnection): Promise<void> {
     await connection.run(`
       BEGIN TRANSACTION;
       ${CREATE_FOLLOWS_TABLE}
+      ${CREATE_METADATA_TABLE}
       ${CREATE_INDEXES}
       COMMIT;
     `);

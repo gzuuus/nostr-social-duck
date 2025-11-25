@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.20
+
+### Patch Changes
+
+- feat: implement persistent root tables with delta updates and enhanced table building
+
 ## 0.1.19
 
 ### Patch Changes

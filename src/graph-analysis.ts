@@ -374,44 +374,288 @@ export async function getUsersWithinDistance(
  * @param rootPubkey - The root pubkey
  * @param maxDepth - Maximum depth to traverse
  */
+/**
+ * Sets a value in the metadata table
+ */
+export async function setMetadataValue(
+  connection: DuckDBConnection,
+  key: string,
+  value: string,
+): Promise<void> {
+  await executeWithRetry(async () => {
+    await connection.run(
+      `INSERT OR REPLACE INTO nsd_metadata (key, value) VALUES (?, ?)`,
+      [key, value],
+    );
+  });
+}
+
+/**
+ * Gets a value from the metadata table
+ */
+export async function getMetadataValue(
+  connection: DuckDBConnection,
+  key: string,
+): Promise<string | null> {
+  const reader = await connection.runAndReadAll(
+    `SELECT value FROM nsd_metadata WHERE key = ?`,
+    [key],
+  );
+  const rows = reader.getRows();
+  if (rows.length === 0) {
+    return null;
+  }
+  return String(rows[0]![0]);
+}
+
 export async function buildRootDistancesTable(
   connection: DuckDBConnection,
   rootPubkey: string,
   maxDepth: number,
 ): Promise<void> {
   const normalizedRoot = normalizePubkey(rootPubkey);
+  const BATCH_SIZE = 5000;
 
   // Use retry logic for transaction conflicts
   await executeWithRetry(async () => {
-    // Create temporary table for O(1) lookups using optimized BFS
-    // We use CREATE OR REPLACE to handle updates efficiently
-    await connection.run(
-      `
-      CREATE OR REPLACE TEMPORARY TABLE nsd_root_distances AS
-      WITH RECURSIVE bfs(pubkey, distance)
-      USING KEY (pubkey) AS (
-        -- Base case: root node
-        SELECT ?::VARCHAR AS pubkey, 0 AS distance
-        UNION
-        -- Recursive step
-        SELECT DISTINCT
-          f.followed_pubkey AS pubkey,
-          bfs.distance + 1 AS distance
-        FROM bfs
-        JOIN nsd_follows f ON bfs.pubkey = f.follower_pubkey
-        LEFT JOIN recurring.bfs visited ON f.followed_pubkey = visited.pubkey
-        WHERE bfs.distance < ?
-          AND visited.pubkey IS NULL
-      )
-      SELECT pubkey, distance FROM bfs
-      `,
-      [normalizedRoot, maxDepth],
-    );
+    // Start transaction for atomic operation
+    await connection.run("BEGIN TRANSACTION");
+    try {
+      // Create persistent table for O(1) lookups
+      // We define PRIMARY KEY immediately to ensure fast lookups during the build process
+      await connection.run(
+        `
+        CREATE OR REPLACE TABLE nsd_root_distances (
+          pubkey VARCHAR(64) PRIMARY KEY,
+          distance INTEGER NOT NULL
+        );
+        `
+      );
 
-    // Create index for fast lookups
-    await connection.run(`
-      CREATE INDEX IF NOT EXISTS idx_root_distances ON nsd_root_distances(pubkey)
-    `);
+      // Create temporary tables for BFS traversal
+      // These are created once and reused to avoid catalog overhead
+      await connection.run(
+        `CREATE OR REPLACE TEMPORARY TABLE nsd_bfs_frontier (pubkey VARCHAR(64))`
+      );
+      await connection.run(
+        `CREATE OR REPLACE TEMPORARY TABLE nsd_bfs_next_frontier (pubkey VARCHAR(64))`
+      );
+      await connection.run(
+        `CREATE OR REPLACE TEMPORARY TABLE nsd_batch_candidates (pubkey VARCHAR(64))`
+      );
+
+      // Initialize: Insert root into both tables
+      await connection.run(
+        `INSERT INTO nsd_root_distances (pubkey, distance) VALUES (?, 0)`,
+        [normalizedRoot]
+      );
+      await connection.run(
+        `INSERT INTO nsd_bfs_frontier (pubkey) VALUES (?)`,
+        [normalizedRoot]
+      );
+
+      // Iterative layer-by-layer construction
+      for (let currentDepth = 0; currentDepth < maxDepth; currentDepth++) {
+        // Check if frontier is empty (stop condition)
+        const countReader = await connection.runAndReadAll(`SELECT count(*) FROM nsd_bfs_frontier`);
+        const frontierSize = Number(countReader.getRows()[0]![0]);
+        
+        if (frontierSize === 0) {
+          break;
+        }
+
+        // Clear next frontier for this layer
+        await connection.run(`DELETE FROM nsd_bfs_next_frontier`);
+
+        // Process frontier in batches to avoid memory spikes
+        for (let offset = 0; offset < frontierSize; offset += BATCH_SIZE) {
+          // Clear batch candidates table for reuse
+          await connection.run(`DELETE FROM nsd_batch_candidates`);
+          
+          // Find candidates (New Nodes) -> Temp Batch Table
+          await connection.run(`
+            INSERT INTO nsd_batch_candidates
+            SELECT DISTINCT f.followed_pubkey
+            FROM (
+              SELECT pubkey FROM nsd_bfs_frontier LIMIT ? OFFSET ?
+            ) batch
+            JOIN nsd_follows f ON batch.pubkey = f.follower_pubkey
+            LEFT JOIN nsd_root_distances existing ON f.followed_pubkey = existing.pubkey
+            WHERE existing.pubkey IS NULL
+          `, [BATCH_SIZE, offset]);
+          
+          // Move candidates to permanent storage
+          await connection.run(`
+            INSERT INTO nsd_root_distances (pubkey, distance)
+            SELECT pubkey, ? FROM nsd_batch_candidates
+          `, [currentDepth + 1]);
+          
+          // Move candidates to next frontier
+          await connection.run(`
+            INSERT INTO nsd_bfs_next_frontier (pubkey)
+            SELECT pubkey FROM nsd_batch_candidates
+          `);
+        }
+
+        // Swap frontiers: Next becomes Current
+        await connection.run(`DELETE FROM nsd_bfs_frontier`);
+        await connection.run(`
+          INSERT INTO nsd_bfs_frontier (pubkey)
+          SELECT pubkey FROM nsd_bfs_next_frontier
+        `);
+      }
+
+      // Cleanup temporary tables
+      await connection.run(`DROP TABLE IF EXISTS nsd_bfs_frontier`);
+      await connection.run(`DROP TABLE IF EXISTS nsd_bfs_next_frontier`);
+      await connection.run(`DROP TABLE IF EXISTS nsd_batch_candidates`);
+
+      // Create index for fast lookups (Primary Key already covers unique lookups)
+      await connection.run(`
+        CREATE INDEX IF NOT EXISTS idx_root_distances ON nsd_root_distances(pubkey)
+      `);
+
+      // Update metadata
+      await setMetadataValue(connection, 'root_pubkey', normalizedRoot);
+      await setMetadataValue(connection, 'root_depth', String(maxDepth));
+      await setMetadataValue(connection, 'root_built_at', String(Date.now()));
+
+      // Commit transaction
+      await connection.run("COMMIT");
+    } catch (error) {
+      // Rollback on any error
+      await connection.run("ROLLBACK");
+      throw error;
+    }
+  });
+}
+
+/**
+ * Updates the root distances table with delta changes from updated pubkeys
+ * This implements the "Delta Patch" strategy for progressive evolution
+ *
+ * @param connection - Active DuckDB connection
+ * @param updatedPubkeys - Array of pubkeys that had their follow lists updated
+ */
+export async function updateRootDistancesDelta(
+  connection: DuckDBConnection,
+  updatedPubkeys: string[],
+): Promise<void> {
+  if (updatedPubkeys.length === 0) {
+    return;
+  }
+
+  // Get current root pubkey from metadata
+  const rootPubkey = await getMetadataValue(connection, 'root_pubkey');
+  if (!rootPubkey) {
+    // No root table exists, nothing to update
+    return;
+  }
+
+  // Normalize updated pubkeys
+  const normalizedUpdated = updatedPubkeys.map(normalizePubkey);
+  
+  // Get max depth from metadata
+  const rootDepthStr = await getMetadataValue(connection, 'root_depth');
+  const maxDepth = rootDepthStr ? parseInt(rootDepthStr, 10) : 6;
+
+  await executeWithRetry(async () => {
+    await connection.run("BEGIN TRANSACTION");
+    try {
+      let frontier = [...normalizedUpdated];
+      const visited = new Set<string>();
+      
+      // Iteratively propagate updates
+      // We limit iterations to avoid infinite loops, though maxDepth should naturally limit it
+      for (let i = 0; i < maxDepth + 2; i++) {
+        if (frontier.length === 0) break;
+
+        // Filter frontier to avoid reprocessing in the same transaction if cycles exist
+        // (though the distance check prevents cycles from propagating)
+        
+        // Find all nodes that need to be updated based on the current frontier
+        // We use a temporary table or just select them first
+        const placeholders = frontier.map(() => '?').join(',');
+        
+        const updatesReader = await connection.runAndReadAll(
+          `
+          SELECT DISTINCT
+            f.followed_pubkey as pubkey,
+            rd.distance + 1 as new_distance
+          FROM nsd_follows f
+          JOIN nsd_root_distances rd ON f.follower_pubkey = rd.pubkey
+          WHERE f.follower_pubkey IN (${placeholders})
+            AND rd.distance + 1 <= ? -- Respect max depth
+            AND (
+              -- They are new to the graph (not in distances table)
+              f.followed_pubkey NOT IN (SELECT pubkey FROM nsd_root_distances)
+              OR
+              -- Or we found a shorter path
+              rd.distance + 1 < (SELECT distance FROM nsd_root_distances WHERE pubkey = f.followed_pubkey)
+            )
+          `,
+          [...frontier, maxDepth]
+        );
+        
+        const updates = updatesReader.getRows();
+        
+        if (updates.length === 0) {
+          break;
+        }
+        
+        const nextFrontier: string[] = [];
+        const updatePubkeys: string[] = [];
+        
+        // Collect updates
+        for (const row of updates) {
+          const pubkey = String(row[0]);
+          // const distance = Number(row[1]);
+          nextFrontier.push(pubkey);
+          updatePubkeys.push(pubkey);
+        }
+        
+        // Apply updates
+        if (updatePubkeys.length > 0) {
+          const updatePlaceholders = updatePubkeys.map(() => '?').join(',');
+          
+          // 1. Delete existing entries
+          await connection.run(
+            `DELETE FROM nsd_root_distances WHERE pubkey IN (${updatePlaceholders})`,
+            updatePubkeys
+          );
+          
+          // 2. Insert new entries
+          // We need to re-calculate the best distance because multiple parents in frontier might point to same child
+          // with different distances. We want the minimum.
+          await connection.run(
+            `
+            INSERT INTO nsd_root_distances (pubkey, distance)
+            SELECT
+              f.followed_pubkey,
+              MIN(rd.distance + 1)
+            FROM nsd_follows f
+            JOIN nsd_root_distances rd ON f.follower_pubkey = rd.pubkey
+            WHERE f.followed_pubkey IN (${updatePlaceholders})
+            GROUP BY f.followed_pubkey
+            `,
+            updatePubkeys
+          );
+        }
+        
+        frontier = nextFrontier;
+      }
+
+      // Update the build timestamp to reflect this delta update
+      await connection.run(
+        `INSERT OR REPLACE INTO nsd_metadata (key, value) VALUES ('root_built_at', ?)`,
+        [String(Date.now())]
+      );
+
+      await connection.run("COMMIT");
+    } catch (error) {
+      await connection.run("ROLLBACK");
+      throw error;
+    }
   });
 }
 
