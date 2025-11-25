@@ -554,9 +554,17 @@ export class DuckDBSocialGraphAnalyzer
   /**
    * Sets a new maximum depth for path searches
    *
-   * @param maxDepth - The new maximum depth (must be positive)
+   * @param maxDepth - The new maximum depth (defaults to 6 if undefined/null)
    */
   setMaxDepth(maxDepth: number): void {
+    // Handle undefined/null by defaulting to 6
+    if (maxDepth === undefined || maxDepth === null) {
+      this.maxDepth = 6;
+      return;
+    }
+    if (typeof maxDepth !== "number") {
+      throw new Error("maxDepth must be a number");
+    }
     if (maxDepth < 1) {
       throw new Error("maxDepth must be at least 1");
     }
@@ -629,6 +637,7 @@ export class DuckDBSocialGraphAnalyzer
       );
       return reader.getRows().length > 0;
     } catch (error) {
+      console.error("Error checking root distances table:", error);
       return false;
     }
   }

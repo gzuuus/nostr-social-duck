@@ -1,4 +1,5 @@
 # Nostr Social Duck 🦆
+
 <div>
   <img src="https://github.com/user-attachments/assets/a3a81410-0d2c-4b0d-93f5-43b15aef42c1" alt="Image" style="display:block;width:280px;height:auto;object-fit:contain;">
 </div>

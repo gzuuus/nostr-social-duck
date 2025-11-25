@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.21
+
+### Patch Changes
+
+- fix(analyzer): handle undefined/null maxDepth and add error logging
+
 ## 0.1.20
 
 ### Patch Changes

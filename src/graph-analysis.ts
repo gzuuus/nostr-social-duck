@@ -563,7 +563,6 @@ export async function updateRootDistancesDelta(
     await connection.run("BEGIN TRANSACTION");
     try {
       let frontier = [...normalizedUpdated];
-      const visited = new Set<string>();
       
       // Iteratively propagate updates
       // We limit iterations to avoid infinite loops, though maxDepth should naturally limit it
