@@ -31,9 +31,8 @@ async function bulkDeleteFollows(
 /**
  * Ingests a single Kind 3 Nostr event into the database
  *
- * This implements Nostr's "latest event wins" semantics:
- * 1. Delete all existing follows for this pubkey
- * 2. Insert the new follow list from the event
+ * This implements Nostr's "latest event wins" semantics by delegating
+ * to the batch ingestion function for consistent behavior.
  *
  * @param connection - Active DuckDB connection
  * @param event - The Nostr Kind 3 event to ingest
@@ -42,86 +41,8 @@ export async function ingestEvent(
   connection: DuckDBConnection,
   event: NostrEvent,
 ): Promise<void> {
-  // Parse the event to extract follow relationships
-  const { follows } = parseKind3Event(event);
-
-  // If there are no follows in this event, we're done
-  if (follows.length === 0) {
-    return;
-  }
-
-  // Phase 1: Deduplicate follows outside transaction
-  const seenKeys = new Set<string>();
-  const uniqueFollows: FollowRelationship[] = [];
-
-  try {
-    // Deduplicate follows by (follower_pubkey, followed_pubkey) only
-    for (const follow of follows) {
-      const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
-      if (!seenKeys.has(key)) {
-        seenKeys.add(key);
-        uniqueFollows.push(follow);
-      }
-    }
-
-    // Phase 2: Database operations within transaction
-    await executeWithRetry(async () => {
-      await connection.run("BEGIN TRANSACTION");
-
-      try {
-        // Delete existing follows from this pubkey (event replacement)
-        await deleteFollowsForPubkey(connection, event.pubkey);
-
-        // Insert all follows in optimized chunks
-        const CHUNK_SIZE = 500;
-
-        // Pre-compute placeholders for maximum chunk size
-        const maxPlaceholders = Array(CHUNK_SIZE).fill("(?, ?, ?)").join(", ");
-
-        for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
-          const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
-
-          // Use pre-computed placeholders for full chunks, custom for last chunk
-          const values =
-            chunk.length === CHUNK_SIZE
-              ? maxPlaceholders
-              : chunk.map(() => "(?, ?, ?)").join(", ");
-
-          const params: (string | number)[] = [];
-
-          for (const follow of chunk) {
-            params.push(
-              follow.follower_pubkey,
-              follow.followed_pubkey,
-              follow.created_at,
-            );
-          }
-
-          await connection.run(
-            `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
-            params,
-          );
-        }
-
-        await connection.run("COMMIT");
-      } catch (error) {
-        await connection.run("ROLLBACK");
-        throw error;
-      }
-    });
-  } finally {
-    // Free memory
-    seenKeys.clear();
-    uniqueFollows.length = 0;
-  }
-
-  // Update metadata to track graph changes
-  await executeWithRetry(async () => {
-    await connection.run(
-      `INSERT OR REPLACE INTO nsd_metadata (key, value) VALUES ('graph_updated_at', ?)`,
-      [String(Date.now())],
-    );
-  });
+  // Delegate to batch ingestion for consistent processing
+  await ingestEvents(connection, [event]);
 }
 
 /**
@@ -161,7 +82,7 @@ export async function ingestEvents(
   );
 
   // Process events in batches for better performance
-  const BATCH_SIZE = 1000;
+  const BATCH_SIZE = 250;
   const latestEvents = Array.from(latestEventsByPubkey.values());
   const totalBatches = Math.ceil(latestEvents.length / BATCH_SIZE);
 
@@ -254,7 +175,7 @@ async function processEventBatch(
         await bulkDeleteFollows(connection, pubkeysArray);
 
         // Insert all follows in optimized chunks
-        const CHUNK_SIZE = 500;
+        const CHUNK_SIZE = 250;
 
         // Pre-compute placeholders for maximum chunk size
         const maxPlaceholders = Array(CHUNK_SIZE).fill("(?, ?, ?)").join(", ");
@@ -297,21 +218,4 @@ async function processEventBatch(
     uniqueFollows.length = 0;
     pubkeysToDelete.clear();
   }
-}
-
-/**
- * Deletes all follows for a specific pubkey
- *
- * @param connection - Active DuckDB connection
- * @param pubkey - The pubkey whose follows should be deleted
- */
-export async function deleteFollowsForPubkey(
-  connection: DuckDBConnection,
-  pubkey: string,
-): Promise<void> {
-  await executeWithRetry(async () => {
-    await connection.run("DELETE FROM nsd_follows WHERE follower_pubkey = ?", [
-      pubkey,
-    ]);
-  });
 }

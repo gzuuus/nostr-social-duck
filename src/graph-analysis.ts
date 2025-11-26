@@ -6,6 +6,7 @@ import { DuckDBConnection } from "@duckdb/node-api";
 import type { SocialPath } from "./types.js";
 import { normalizePubkey } from "./parser.js";
 import { executeWithRetry } from "./utils.js";
+import { pubkeyExists } from "./database.js";
 
 /**
  * Finds the shortest path between two pubkeys using optimized bidirectional BFS
@@ -22,6 +23,76 @@ import { executeWithRetry } from "./utils.js";
  * @param maxDepth - Maximum search depth (default: 6)
  * @returns Promise resolving to the shortest path, or null if no path exists
  */
+
+/**
+ * Checks if both pubkeys exist in the graph
+ */
+async function checkGraphExistence(
+  connection: DuckDBConnection,
+  pubkey1: string,
+  pubkey2: string,
+): Promise<boolean> {
+  const reader = await connection.runAndReadAll(
+    `SELECT
+      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as exists1,
+      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
+      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as exists2`,
+    [pubkey1, pubkey1, pubkey2, pubkey2],
+  );
+
+  const row = reader.getRows()[0];
+  return !!(row && row[0] && row[1]);
+}
+
+/**
+ * Checks for direct follow relationship
+ */
+async function checkDirectConnection(
+  connection: DuckDBConnection,
+  fromPubkey: string,
+  toPubkey: string,
+): Promise<boolean> {
+  const reader = await connection.runAndReadAll(
+    `SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? AND followed_pubkey = ?`,
+    [fromPubkey, toPubkey],
+  );
+  return reader.getRows().length > 0;
+}
+
+/**
+ * Checks for distance 2 connection
+ */
+async function checkDistance2Connection(
+  connection: DuckDBConnection,
+  fromPubkey: string,
+  toPubkey: string,
+): Promise<{ path: string[]; distance: number } | null> {
+  const reader = await connection.runAndReadAll(
+    `
+    SELECT
+      f1.follower_pubkey AS start,
+      f1.followed_pubkey AS intermediate,
+      f2.followed_pubkey AS end
+    FROM nsd_follows f1
+    JOIN nsd_follows f2 ON f1.followed_pubkey = f2.follower_pubkey
+    WHERE f1.follower_pubkey = ?
+      AND f2.followed_pubkey = ?
+    LIMIT 1
+    `,
+    [fromPubkey, toPubkey],
+  );
+
+  if (reader.getRows().length > 0) {
+    const row = reader.getRows()[0]!;
+    return {
+      path: [String(row[0]), String(row[1]), String(row[2])],
+      distance: 2,
+    };
+  }
+  return null;
+}
+
 export async function findShortestPath(
   connection: DuckDBConnection,
   fromPubkey: string,
@@ -41,28 +112,12 @@ export async function findShortestPath(
   }
 
   // Quick check: Do both pubkeys exist in the graph?
-  const existenceReader = await connection.runAndReadAll(
-    `SELECT
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
-      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as from_exists,
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
-      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as to_exists`,
-    [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
-  );
-
-  const existenceRow = existenceReader.getRows()[0];
-  if (!existenceRow || !existenceRow[0] || !existenceRow[1]) {
-    // One or both pubkeys don't exist in the graph
+  if (!(await checkGraphExistence(connection, normalizedFrom, normalizedTo))) {
     return null;
   }
 
   // Check for direct connection first (optimization)
-  const directReader = await connection.runAndReadAll(
-    `SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? AND followed_pubkey = ?`,
-    [normalizedFrom, normalizedTo],
-  );
-
-  if (directReader.getRows().length > 0) {
+  if (await checkDirectConnection(connection, normalizedFrom, normalizedTo)) {
     return {
       path: [normalizedFrom, normalizedTo],
       distance: 1,
@@ -71,27 +126,9 @@ export async function findShortestPath(
 
   // For distance 2, use optimized query that limits exploration
   if (maxDepth >= 2) {
-    const distance2Reader = await connection.runAndReadAll(
-      `
-      SELECT
-        f1.follower_pubkey AS start,
-        f1.followed_pubkey AS intermediate,
-        f2.followed_pubkey AS end
-      FROM nsd_follows f1
-      JOIN nsd_follows f2 ON f1.followed_pubkey = f2.follower_pubkey
-      WHERE f1.follower_pubkey = ?
-        AND f2.followed_pubkey = ?
-      LIMIT 1
-      `,
-      [normalizedFrom, normalizedTo],
-    );
-
-    if (distance2Reader.getRows().length > 0) {
-      const row = distance2Reader.getRows()[0]!;
-      return {
-        path: [String(row[0]), String(row[1]), String(row[2])],
-        distance: 2,
-      };
+    const distance2Result = await checkDistance2Connection(connection, normalizedFrom, normalizedTo);
+    if (distance2Result) {
+      return distance2Result;
     }
   }
 
@@ -204,18 +241,7 @@ export async function isDirectFollow(
   const normalizedFollower = normalizePubkey(followerPubkey);
   const normalizedFollowed = normalizePubkey(followedPubkey);
 
-  const reader = await connection.runAndReadAll(
-    `
-    SELECT 1
-    FROM nsd_follows
-    WHERE follower_pubkey = ?
-      AND followed_pubkey = ?
-    LIMIT 1
-    `,
-    [normalizedFollower, normalizedFollowed],
-  );
-
-  return reader.getRows().length > 0;
+  return checkDirectConnection(connection, normalizedFollower, normalizedFollowed);
 }
 
 /**
@@ -309,12 +335,7 @@ export async function getUsersWithinDistance(
   }
 
   // Quick check: Does the starting pubkey exist in the graph?
-  const fromExists = await connection.runAndReadAll(
-    "SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? OR followed_pubkey = ? LIMIT 1",
-    [normalizedFrom, normalizedFrom],
-  );
-
-  if (fromExists.getRows().length === 0) {
+  if (!(await pubkeyExists(connection, normalizedFrom))) {
     // Starting pubkey doesn't exist in the graph - return null for consistency
     return null;
   }
@@ -801,6 +822,7 @@ export async function findShortestDistance(
   fromPubkey: string,
   toPubkey: string,
   maxDepth: number = 6,
+  assumeSourceExists: boolean = false,
 ): Promise<number | null> {
   // Normalize pubkeys to lowercase for consistent comparison
   const normalizedFrom = normalizePubkey(fromPubkey);
@@ -811,47 +833,22 @@ export async function findShortestDistance(
     return 0;
   }
 
-  // Quick check: Do both pubkeys exist in the graph?
-  const existenceReader = await connection.runAndReadAll(
-    `SELECT
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
-      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as from_exists,
-      EXISTS(SELECT 1 FROM nsd_follows WHERE follower_pubkey = ?) OR
-      EXISTS(SELECT 1 FROM nsd_follows WHERE followed_pubkey = ?) as to_exists`,
-    [normalizedFrom, normalizedFrom, normalizedTo, normalizedTo],
-  );
-
-  const existenceRow = existenceReader.getRows()[0];
-  if (!existenceRow || !existenceRow[0] || !existenceRow[1]) {
-    // One or both pubkeys don't exist in the graph
-    return null;
+  // Check if source exists (unless caller assumes it exists)
+  if (!assumeSourceExists) {
+    if (!(await pubkeyExists(connection, normalizedFrom))) {
+      return null;
+    }
   }
 
   // Check for direct connection first
-  const directReader = await connection.runAndReadAll(
-    `SELECT 1 FROM nsd_follows WHERE follower_pubkey = ? AND followed_pubkey = ?`,
-    [normalizedFrom, normalizedTo],
-  );
-
-  if (directReader.getRows().length > 0) {
+  if (await checkDirectConnection(connection, normalizedFrom, normalizedTo)) {
     return 1;
   }
 
   // For distance 2, use optimized query that limits exploration
   if (maxDepth >= 2) {
-    const distance2Reader = await connection.runAndReadAll(
-      `
-      SELECT 1
-      FROM nsd_follows f1
-      JOIN nsd_follows f2 ON f1.followed_pubkey = f2.follower_pubkey
-      WHERE f1.follower_pubkey = ?
-        AND f2.followed_pubkey = ?
-      LIMIT 1
-      `,
-      [normalizedFrom, normalizedTo],
-    );
-
-    if (distance2Reader.getRows().length > 0) {
+    const distance2Result = await checkDistance2Connection(connection, normalizedFrom, normalizedTo);
+    if (distance2Result) {
       return 2;
     }
   }
@@ -1013,6 +1010,19 @@ export async function getDistancesBatchBidirectional(
     return new Map();
   }
 
+  // Normalize source pubkey once
+  const normalizedFrom = normalizePubkey(fromPubkey);
+  
+  // Check if source pubkey exists in the graph (once for entire batch)
+  if (!(await pubkeyExists(connection, normalizedFrom))) {
+    // Source doesn't exist - return all nulls
+    const result = new Map<string, number | null>();
+    for (const pubkey of toPubkeys) {
+      result.set(pubkey, null);
+    }
+    return result;
+  }
+
   // For batch operations, we'll use individual queries for each target
   // This is simpler and more reliable than complex recursive CTEs with multiple targets
   const result = new Map<string, number | null>();
@@ -1022,9 +1032,9 @@ export async function getDistancesBatchBidirectional(
     result.set(pubkey, null);
   }
 
-  // Process each target individually using the existing optimized function
+  // Process each target individually using optimized function that skips source existence check
   for (const targetPubkey of toPubkeys) {
-    const distance = await findShortestDistance(connection, fromPubkey, targetPubkey, maxDepth);
+    const distance = await findShortestDistance(connection, normalizedFrom, targetPubkey, maxDepth, true);
     result.set(targetPubkey, distance);
   }
 

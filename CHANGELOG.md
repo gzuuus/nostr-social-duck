@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.23
+
+### Patch Changes
+
+- refactor: delegate event ingestion to batch process
+
 ## 0.1.22
 
 ### Patch Changes
