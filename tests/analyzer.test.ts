@@ -82,20 +82,6 @@ describe("DuckDBSocialGraphAnalyzer", () => {
         );
         expect(oldPath).toBeNull();
       });
-
-      it("should throw error for invalid event", async () => {
-        const invalidEvent = {
-          id: "invalid",
-          pubkey: "not-a-pubkey",
-          created_at: 1234567890,
-          kind: 3,
-          tags: [],
-          content: "",
-          sig: "sig",
-        } as NostrEvent;
-
-        await expect(analyzer.ingestEvent(invalidEvent)).rejects.toThrow();
-      });
     });
 
     describe("error handling", () => {

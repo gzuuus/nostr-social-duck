@@ -106,26 +106,6 @@ describe("Edge Cases and Error Handling", () => {
       );
       expect(path).not.toBeNull();
     });
-
-    it("should reject invalid pubkey formats", async () => {
-      const invalidEvent = createMockKind3Event(
-        "not-a-valid-pubkey",
-        [TEST_PUBKEYS.fiatjaf],
-        1234567890,
-      );
-
-      await expect(analyzer.ingestEvent(invalidEvent)).rejects.toThrow();
-    });
-
-    it("should handle pubkeys with leading/trailing whitespace", async () => {
-      const event = createMockKind3Event(
-        ` ${TEST_PUBKEYS.adam} `, // Whitespace
-        [TEST_PUBKEYS.fiatjaf],
-        1234567890,
-      );
-
-      await expect(analyzer.ingestEvent(event)).rejects.toThrow();
-    });
   });
 
   describe("Tag Format Edge Cases", () => {

@@ -3,9 +3,9 @@
  */
 
 import { DuckDBConnection } from "@duckdb/node-api";
-import type { NostrEvent, FollowRelationship } from "./types.js";
-import { parseKind3Event } from "./parser.js";
-import { executeWithRetry } from "./utils.js";
+import type { NostrEvent } from "./types.js";
+import { parseKind3Event, validateKind3Event } from "./parser.js";
+import { executeWithRetry, isHexKey } from "./utils.js";
 
 /**
  * Bulk deletes follows for multiple pubkeys using a single query
@@ -69,6 +69,9 @@ export async function ingestEvents(
   const latestEventsByPubkey = new Map<string, NostrEvent>();
 
   for (const event of events) {
+    // Validate event structure before processing
+    validateKind3Event(event);
+
     const existing = latestEventsByPubkey.get(event.pubkey);
 
     // Keep the event with the latest timestamp
@@ -81,8 +84,8 @@ export async function ingestEvents(
     `Processing ${latestEventsByPubkey.size} unique events after deduplication`,
   );
 
-  // Process events in batches for better performance
-  const BATCH_SIZE = 250;
+  // Process events in smaller batches for better memory management
+  const BATCH_SIZE = 100;
   const latestEvents = Array.from(latestEventsByPubkey.values());
   const totalBatches = Math.ceil(latestEvents.length / BATCH_SIZE);
 
@@ -116,7 +119,7 @@ export async function ingestEvents(
 }
 
 /**
- * Processes a batch of events with optimized bulk operations
+ * Processes a batch of events with streaming buffer for memory efficiency
  *
  * @param connection - Active DuckDB connection
  * @param events - Batch of events to process
@@ -129,93 +132,114 @@ async function processEventBatch(
     return;
   }
 
-  // Phase 1: Parse and prepare data outside transaction (CPU-bound)
-  const seenKeys = new Set<string>();
-  const uniqueFollows: Array<{
-    follower_pubkey: string;
-    followed_pubkey: string;
-    created_at: number;
-  }> = [];
+  // Collect pubkeys that need deletion (all events with follows)
   const pubkeysToDelete = new Set<string>();
+  let hasFollows = false;
 
-  try {
-    // Single pass through events with parsing and deduplication
-    for (const event of events) {
-      const { follows } = parseKind3Event(event);
-      if (follows.length > 0) {
-        pubkeysToDelete.add(event.pubkey);
+  // Quick scan to check if we have any follows in this batch
+  // We manually check tags to avoid the overhead of full parsing/object creation
+  for (const event of events) {
+    if (!Array.isArray(event.tags)) continue;
 
-        // Deduplicate and collect follows simultaneously
-        for (const follow of follows) {
-          const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
-          if (!seenKeys.has(key)) {
-            seenKeys.add(key);
-            uniqueFollows.push({
-              follower_pubkey: follow.follower_pubkey,
-              followed_pubkey: follow.followed_pubkey,
-              created_at: follow.created_at,
-            });
-          }
-        }
+    let hasValidFollow = false;
+    for (const tag of event.tags) {
+      // Check for valid 'p' tag: ["p", "hex_pubkey", ...]
+      if (
+        Array.isArray(tag) &&
+        tag.length >= 2 &&
+        tag[0] === "p" &&
+        isHexKey(tag[1])
+      ) {
+        hasValidFollow = true;
+        break;
       }
     }
 
-    // Skip if no follows in this batch
-    if (uniqueFollows.length === 0) {
-      return;
+    if (hasValidFollow) {
+      pubkeysToDelete.add(event.pubkey);
+      hasFollows = true;
     }
+  }
 
-    // Phase 2: Database operations (I/O-bound within transaction)
-    await executeWithRetry(async () => {
-      await connection.run("BEGIN TRANSACTION");
+  // Skip if no follows in this batch
+  if (!hasFollows) {
+    return;
+  }
 
-      try {
-        // Bulk delete existing follows for all pubkeys in this batch
-        const pubkeysArray = Array.from(pubkeysToDelete);
-        await bulkDeleteFollows(connection, pubkeysArray);
+  // Phase 2: Database operations with streaming buffer
+  await executeWithRetry(async () => {
+    await connection.run("BEGIN TRANSACTION");
 
-        // Insert all follows in optimized chunks
-        const CHUNK_SIZE = 250;
+    try {
+      // Bulk delete existing follows for all pubkeys in this batch
+      const pubkeysArray = Array.from(pubkeysToDelete);
+      await bulkDeleteFollows(connection, pubkeysArray);
 
-        // Pre-compute placeholders for maximum chunk size
-        const maxPlaceholders = Array(CHUNK_SIZE).fill("(?, ?, ?)").join(", ");
+      // Insert follows using streaming buffer
+      const BUFFER_SIZE = 3000;
+      const buffer: Array<{
+        follower_pubkey: string;
+        followed_pubkey: string;
+        created_at: number;
+      }> = [];
 
-        for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
-          const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
+      const flushBuffer = async () => {
+        if (buffer.length === 0) return;
 
-          // Use pre-computed placeholders for full chunks, custom for last chunk
-          const values =
-            chunk.length === CHUNK_SIZE
-              ? maxPlaceholders
-              : chunk.map(() => "(?, ?, ?)").join(", ");
+        const placeholders = buffer.map(() => "(?, ?, ?)").join(", ");
+        const params: (string | number)[] = [];
 
-          const params: (string | number)[] = [];
-
-          for (const follow of chunk) {
-            params.push(
-              follow.follower_pubkey,
-              follow.followed_pubkey,
-              follow.created_at,
-            );
-          }
-
-          await connection.run(
-            `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
-            params,
+        for (const follow of buffer) {
+          params.push(
+            follow.follower_pubkey,
+            follow.followed_pubkey,
+            follow.created_at,
           );
         }
 
-        await connection.run("COMMIT");
-      } catch (error) {
-        await connection.run("ROLLBACK");
-        throw error;
+        await connection.run(
+          `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${placeholders}`,
+          params,
+        );
+
+        buffer.length = 0; // Clear buffer efficiently
+      };
+
+      // Process events one by one with per-event deduplication
+      for (const event of events) {
+        // Skip validation here as it was done in ingestEvents
+        const { follows } = parseKind3Event(event, true);
+        if (follows.length === 0) continue;
+
+        // Deduplicate follows within this event only
+        const seenFollowed = new Set<string>();
+        const eventFollows: typeof follows = [];
+
+        for (const follow of follows) {
+          if (!seenFollowed.has(follow.followed_pubkey)) {
+            seenFollowed.add(follow.followed_pubkey);
+            eventFollows.push(follow);
+          }
+        }
+
+        // Add deduplicated follows to buffer
+        for (const follow of eventFollows) {
+          buffer.push(follow);
+
+          // Flush buffer when it reaches the size limit
+          if (buffer.length >= BUFFER_SIZE) {
+            await flushBuffer();
+          }
+        }
       }
-    });
-  } finally {
-    // Free memory by clearing references (help garbage collection)
-    // This ensures cleanup happens even if there's an error
-    seenKeys.clear();
-    uniqueFollows.length = 0;
-    pubkeysToDelete.clear();
-  }
+
+      // Flush any remaining data in buffer
+      await flushBuffer();
+
+      await connection.run("COMMIT");
+    } catch (error) {
+      await connection.run("ROLLBACK");
+      throw error;
+    }
+  });
 }

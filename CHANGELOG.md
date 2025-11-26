@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.24
+
+### Patch Changes
+
+- refactor: optimize event ingestion with streaming buffer
+
 ## 0.1.23
 
 ### Patch Changes

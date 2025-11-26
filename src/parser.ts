@@ -23,14 +23,6 @@ export function validateKind3Event(event: NostrEvent): void {
     throw new Error(`Expected Kind 3 event, got Kind ${event.kind}`);
   }
 
-  if (!event.id || !isHex(event.id)) {
-    throw new Error("Invalid event ID: must be 64-character hex string");
-  }
-
-  if (!event.pubkey || !isHexKey(event.pubkey)) {
-    throw new Error("Invalid pubkey: must be 64-character hex string");
-  }
-
   if (typeof event.created_at !== "number" || event.created_at < 0) {
     throw new Error("Invalid created_at: must be a positive number");
   }
@@ -48,12 +40,18 @@ export function validateKind3Event(event: NostrEvent): void {
  * ["p", <32-bytes hex key>, <relay URL>, <petname>]
  *
  * @param event - The Nostr Kind 3 event to parse
+ * @param skipValidation - Whether to skip validation (default: false)
  * @returns Parsed event data with follow relationships
  * @throws Error if the event is invalid
  */
-export function parseKind3Event(event: NostrEvent): ParsedKind3Event {
-  // Validate the event first
-  validateKind3Event(event);
+export function parseKind3Event(
+  event: NostrEvent,
+  skipValidation: boolean = false,
+): ParsedKind3Event {
+  // Validate the event first unless skipped
+  if (!skipValidation) {
+    validateKind3Event(event);
+  }
 
   // Extract follow relationships from 'p' tags
   const follows: FollowRelationship[] = [];

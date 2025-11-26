@@ -147,6 +147,7 @@ export class DuckDBSocialGraphAnalyzer
     if (this.closed) {
       throw new Error("Analyzer has been closed");
     }
+
     await ingestSingleEvent(this.connection, event);
 
     // Update root distances with delta if table is valid
@@ -177,6 +178,7 @@ export class DuckDBSocialGraphAnalyzer
     if (this.closed) {
       throw new Error("Analyzer has been closed");
     }
+
     await ingestMultipleEvents(this.connection, events);
 
     // Update root distances with delta if table is valid

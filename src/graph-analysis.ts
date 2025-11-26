@@ -567,7 +567,7 @@ export async function updateRootDistancesDelta(
   }
 
   // Get current root pubkey from metadata
-  const rootPubkey = await getMetadataValue(connection, 'root_pubkey');
+  const rootPubkey = await getMetadataValue(connection, "root_pubkey");
   if (!rootPubkey) {
     // No root table exists, nothing to update
     return;
@@ -575,100 +575,113 @@ export async function updateRootDistancesDelta(
 
   // Normalize updated pubkeys
   const normalizedUpdated = updatedPubkeys.map(normalizePubkey);
-  
+
   // Get max depth from metadata
-  const rootDepthStr = await getMetadataValue(connection, 'root_depth');
+  const rootDepthStr = await getMetadataValue(connection, "root_depth");
   const maxDepth = rootDepthStr ? parseInt(rootDepthStr, 10) : 6;
 
   await executeWithRetry(async () => {
     await connection.run("BEGIN TRANSACTION");
     try {
-      let frontier = [...normalizedUpdated];
-      
-      // Iteratively propagate updates
-      // We limit iterations to avoid infinite loops, though maxDepth should naturally limit it
-      for (let i = 0; i < maxDepth + 2; i++) {
-        if (frontier.length === 0) break;
+      // Create temporary tables for efficient set-based operations
+      await connection.run(
+        `CREATE OR REPLACE TEMPORARY TABLE nsd_delta_frontier (pubkey VARCHAR(64))`,
+      );
+      await connection.run(
+        `CREATE OR REPLACE TEMPORARY TABLE nsd_delta_updates (pubkey VARCHAR(64), distance INTEGER)`,
+      );
 
-        // Filter frontier to avoid reprocessing in the same transaction if cycles exist
-        // (though the distance check prevents cycles from propagating)
-        
-        // Find all nodes that need to be updated based on the current frontier
-        // We use a temporary table or just select them first
-        const placeholders = frontier.map(() => '?').join(',');
-        
-        const updatesReader = await connection.runAndReadAll(
-          `
-          SELECT DISTINCT
-            f.followed_pubkey as pubkey,
-            rd.distance + 1 as new_distance
-          FROM nsd_follows f
-          JOIN nsd_root_distances rd ON f.follower_pubkey = rd.pubkey
-          WHERE f.follower_pubkey IN (${placeholders})
-            AND rd.distance + 1 <= ? -- Respect max depth
-            AND (
-              -- They are new to the graph (not in distances table)
-              f.followed_pubkey NOT IN (SELECT pubkey FROM nsd_root_distances)
-              OR
-              -- Or we found a shorter path
-              rd.distance + 1 < (SELECT distance FROM nsd_root_distances WHERE pubkey = f.followed_pubkey)
-            )
-          `,
-          [...frontier, maxDepth]
+      // Bulk insert initial frontier
+      // We chunk this to avoid hitting any potential statement limits, though DuckDB is robust
+      const CHUNK_SIZE = 3000;
+      for (let i = 0; i < normalizedUpdated.length; i += CHUNK_SIZE) {
+        const chunk = normalizedUpdated.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => "(?)").join(", ");
+        await connection.run(
+          `INSERT INTO nsd_delta_frontier (pubkey) VALUES ${placeholders}`,
+          chunk,
         );
-        
-        const updates = updatesReader.getRows();
-        
-        if (updates.length === 0) {
-          break;
-        }
-        
-        const nextFrontier: string[] = [];
-        const updatePubkeys: string[] = [];
-        
-        // Collect updates
-        for (const row of updates) {
-          const pubkey = String(row[0]);
-          // const distance = Number(row[1]);
-          nextFrontier.push(pubkey);
-          updatePubkeys.push(pubkey);
-        }
-        
-        // Apply updates
-        if (updatePubkeys.length > 0) {
-          const updatePlaceholders = updatePubkeys.map(() => '?').join(',');
-          
-          // 1. Delete existing entries
-          await connection.run(
-            `DELETE FROM nsd_root_distances WHERE pubkey IN (${updatePlaceholders})`,
-            updatePubkeys
-          );
-          
-          // 2. Insert new entries
-          // We need to re-calculate the best distance because multiple parents in frontier might point to same child
-          // with different distances. We want the minimum.
-          await connection.run(
-            `
-            INSERT INTO nsd_root_distances (pubkey, distance)
-            SELECT
-              f.followed_pubkey,
-              MIN(rd.distance + 1)
-            FROM nsd_follows f
-            JOIN nsd_root_distances rd ON f.follower_pubkey = rd.pubkey
-            WHERE f.followed_pubkey IN (${updatePlaceholders})
-            GROUP BY f.followed_pubkey
-            `,
-            updatePubkeys
-          );
-        }
-        
-        frontier = nextFrontier;
       }
 
-      // Update the build timestamp to reflect this delta update
+      // Iteratively propagate updates entirely within the database
+      for (let i = 0; i < maxDepth + 2; i++) {
+        // Check if frontier is empty
+        const countReader = await connection.runAndReadAll(
+          `SELECT count(*) FROM nsd_delta_frontier`,
+        );
+        const frontierSize = Number(countReader.getRows()[0]![0]);
+
+        if (frontierSize === 0) {
+          break;
+        }
+
+        // Clear updates table for this iteration
+        await connection.run(`DELETE FROM nsd_delta_updates`);
+
+        // Find updates:
+        // 1. Join frontier with follows to find children
+        // 2. Join with root_distances to get parent's distance
+        // 3. Calculate new distance (parent + 1)
+        // 4. Filter where new distance is better than existing or node is new
+        await connection.run(
+          `
+          INSERT INTO nsd_delta_updates (pubkey, distance)
+          SELECT
+            f.followed_pubkey,
+            MIN(rd.distance + 1) as new_distance
+          FROM nsd_delta_frontier df
+          JOIN nsd_follows f ON df.pubkey = f.follower_pubkey
+          JOIN nsd_root_distances rd ON f.follower_pubkey = rd.pubkey
+          LEFT JOIN nsd_root_distances existing ON f.followed_pubkey = existing.pubkey
+          WHERE rd.distance + 1 <= ?
+            AND (
+              existing.pubkey IS NULL
+              OR rd.distance + 1 < existing.distance
+            )
+          GROUP BY f.followed_pubkey
+          `,
+          [maxDepth],
+        );
+
+        // Check if we found any updates
+        const updatesCountReader = await connection.runAndReadAll(
+          `SELECT count(*) FROM nsd_delta_updates`,
+        );
+        const updatesCount = Number(updatesCountReader.getRows()[0]![0]);
+
+        if (updatesCount === 0) {
+          break;
+        }
+
+        // Apply updates to the main table
+        // 1. Remove old entries for updated nodes (to replace them)
+        await connection.run(`
+          DELETE FROM nsd_root_distances
+          WHERE pubkey IN (SELECT pubkey FROM nsd_delta_updates)
+        `);
+
+        // 2. Insert new/updated entries
+        await connection.run(`
+          INSERT INTO nsd_root_distances (pubkey, distance)
+          SELECT pubkey, distance FROM nsd_delta_updates
+        `);
+
+        // Prepare next frontier: the nodes we just updated
+        await connection.run(`DELETE FROM nsd_delta_frontier`);
+        await connection.run(`
+          INSERT INTO nsd_delta_frontier (pubkey)
+          SELECT pubkey FROM nsd_delta_updates
+        `);
+      }
+
+      // Cleanup temporary tables
+      await connection.run(`DROP TABLE IF EXISTS nsd_delta_frontier`);
+      await connection.run(`DROP TABLE IF EXISTS nsd_delta_updates`);
+
+      // Update the build timestamp
       await connection.run(
         `INSERT OR REPLACE INTO nsd_metadata (key, value) VALUES ('root_built_at', ?)`,
-        [String(Date.now())]
+        [String(Date.now())],
       );
 
       await connection.run("COMMIT");
