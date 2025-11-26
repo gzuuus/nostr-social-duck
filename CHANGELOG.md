@@ -1,5 +1,11 @@
 # nostr-social-duck
 
+## 0.1.22
+
+### Patch Changes
+
+- fix(ingestion): optimize follow processing with transaction and deduplication
+
 ## 0.1.21
 
 ### Patch Changes

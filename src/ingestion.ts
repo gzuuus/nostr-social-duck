@@ -50,55 +50,70 @@ export async function ingestEvent(
     return;
   }
 
-  // Use transaction for atomic operations with retry logic
-  await executeWithRetry(async () => {
-    await connection.run("BEGIN TRANSACTION");
+  // Phase 1: Deduplicate follows outside transaction
+  const seenKeys = new Set<string>();
+  const uniqueFollows: FollowRelationship[] = [];
 
-    try {
-      // Delete existing follows from this pubkey (event replacement)
-      await deleteFollowsForPubkey(connection, event.pubkey);
-
-      // Use Set for deduplication (more memory efficient than Map for this use case)
-      const seenKeys = new Set<string>();
-      const uniqueFollows: FollowRelationship[] = [];
-
-      // Deduplicate follows by (follower_pubkey, followed_pubkey) only
-      // Since primary key is now (follower_pubkey, followed_pubkey)
-      for (const follow of follows) {
-        const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
-        if (!seenKeys.has(key)) {
-          seenKeys.add(key);
-          uniqueFollows.push(follow);
-        }
+  try {
+    // Deduplicate follows by (follower_pubkey, followed_pubkey) only
+    for (const follow of follows) {
+      const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        uniqueFollows.push(follow);
       }
+    }
 
-      // Insert all follows in optimized chunks
-      const CHUNK_SIZE = 500;
-      for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
-        const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
-        const values = chunk.map(() => "(?, ?, ?)").join(", ");
-        const params: (string | number)[] = [];
+    // Phase 2: Database operations within transaction
+    await executeWithRetry(async () => {
+      await connection.run("BEGIN TRANSACTION");
 
-        for (const follow of chunk) {
-          params.push(
-            follow.follower_pubkey,
-            follow.followed_pubkey,
-            follow.created_at,
+      try {
+        // Delete existing follows from this pubkey (event replacement)
+        await deleteFollowsForPubkey(connection, event.pubkey);
+
+        // Insert all follows in optimized chunks
+        const CHUNK_SIZE = 500;
+
+        // Pre-compute placeholders for maximum chunk size
+        const maxPlaceholders = Array(CHUNK_SIZE).fill("(?, ?, ?)").join(", ");
+
+        for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
+          const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
+
+          // Use pre-computed placeholders for full chunks, custom for last chunk
+          const values =
+            chunk.length === CHUNK_SIZE
+              ? maxPlaceholders
+              : chunk.map(() => "(?, ?, ?)").join(", ");
+
+          const params: (string | number)[] = [];
+
+          for (const follow of chunk) {
+            params.push(
+              follow.follower_pubkey,
+              follow.followed_pubkey,
+              follow.created_at,
+            );
+          }
+
+          await connection.run(
+            `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
+            params,
           );
         }
 
-        await connection.run(
-          `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
-          params,
-        );
+        await connection.run("COMMIT");
+      } catch (error) {
+        await connection.run("ROLLBACK");
+        throw error;
       }
-
-      await connection.run("COMMIT");
-    } catch (error) {
-      await connection.run("ROLLBACK");
-      throw error;
-    }
-  });
+    });
+  } finally {
+    // Free memory
+    seenKeys.clear();
+    uniqueFollows.length = 0;
+  }
 
   // Update metadata to track graph changes
   await executeWithRetry(async () => {
@@ -193,79 +208,95 @@ async function processEventBatch(
     return;
   }
 
-  // Use transaction for atomic operations with retry logic
-  await executeWithRetry(async () => {
-    await connection.run("BEGIN TRANSACTION");
+  // Phase 1: Parse and prepare data outside transaction (CPU-bound)
+  const seenKeys = new Set<string>();
+  const uniqueFollows: Array<{
+    follower_pubkey: string;
+    followed_pubkey: string;
+    created_at: number;
+  }> = [];
+  const pubkeysToDelete = new Set<string>();
 
-    try {
-      // Process follows with minimal memory allocations
-      const seenKeys = new Set<string>();
-      const uniqueFollows: Array<{
-        follower_pubkey: string;
-        followed_pubkey: string;
-        created_at: number;
-      }> = [];
-      const pubkeysToDelete = new Set<string>();
+  try {
+    // Single pass through events with parsing and deduplication
+    for (const event of events) {
+      const { follows } = parseKind3Event(event);
+      if (follows.length > 0) {
+        pubkeysToDelete.add(event.pubkey);
 
-      // Single pass through events with simultaneous parsing and deduplication
-      for (const event of events) {
-        const { follows } = parseKind3Event(event);
-        if (follows.length > 0) {
-          pubkeysToDelete.add(event.pubkey);
-
-          // Deduplicate and collect follows simultaneously
-          // Deduplicate by (follower_pubkey, followed_pubkey) only
-          for (const follow of follows) {
-            const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
-            if (!seenKeys.has(key)) {
-              seenKeys.add(key);
-              uniqueFollows.push({
-                follower_pubkey: follow.follower_pubkey,
-                followed_pubkey: follow.followed_pubkey,
-                created_at: follow.created_at,
-              });
-            }
+        // Deduplicate and collect follows simultaneously
+        for (const follow of follows) {
+          const key = `${follow.follower_pubkey}:${follow.followed_pubkey}`;
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            uniqueFollows.push({
+              follower_pubkey: follow.follower_pubkey,
+              followed_pubkey: follow.followed_pubkey,
+              created_at: follow.created_at,
+            });
           }
         }
       }
+    }
 
-      // Skip if no follows in this batch
-      if (uniqueFollows.length === 0) {
-        await connection.run("COMMIT");
-        return;
-      }
+    // Skip if no follows in this batch
+    if (uniqueFollows.length === 0) {
+      return;
+    }
 
-      // Bulk delete existing follows for all pubkeys in this batch
-      const pubkeysArray = Array.from(pubkeysToDelete);
-      await bulkDeleteFollows(connection, pubkeysArray);
+    // Phase 2: Database operations (I/O-bound within transaction)
+    await executeWithRetry(async () => {
+      await connection.run("BEGIN TRANSACTION");
 
-      // Insert all follows in optimized chunks
-      const CHUNK_SIZE = 500;
-      for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
-        const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
-        const values = chunk.map(() => "(?, ?, ?)").join(", ");
-        const params: (string | number)[] = [];
+      try {
+        // Bulk delete existing follows for all pubkeys in this batch
+        const pubkeysArray = Array.from(pubkeysToDelete);
+        await bulkDeleteFollows(connection, pubkeysArray);
 
-        for (const follow of chunk) {
-          params.push(
-            follow.follower_pubkey,
-            follow.followed_pubkey,
-            follow.created_at,
+        // Insert all follows in optimized chunks
+        const CHUNK_SIZE = 500;
+
+        // Pre-compute placeholders for maximum chunk size
+        const maxPlaceholders = Array(CHUNK_SIZE).fill("(?, ?, ?)").join(", ");
+
+        for (let i = 0; i < uniqueFollows.length; i += CHUNK_SIZE) {
+          const chunk = uniqueFollows.slice(i, i + CHUNK_SIZE);
+
+          // Use pre-computed placeholders for full chunks, custom for last chunk
+          const values =
+            chunk.length === CHUNK_SIZE
+              ? maxPlaceholders
+              : chunk.map(() => "(?, ?, ?)").join(", ");
+
+          const params: (string | number)[] = [];
+
+          for (const follow of chunk) {
+            params.push(
+              follow.follower_pubkey,
+              follow.followed_pubkey,
+              follow.created_at,
+            );
+          }
+
+          await connection.run(
+            `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
+            params,
           );
         }
 
-        await connection.run(
-          `INSERT OR REPLACE INTO nsd_follows (follower_pubkey, followed_pubkey, created_at) VALUES ${values}`,
-          params,
-        );
+        await connection.run("COMMIT");
+      } catch (error) {
+        await connection.run("ROLLBACK");
+        throw error;
       }
-
-      await connection.run("COMMIT");
-    } catch (error) {
-      await connection.run("ROLLBACK");
-      throw error;
-    }
-  });
+    });
+  } finally {
+    // Free memory by clearing references (help garbage collection)
+    // This ensures cleanup happens even if there's an error
+    seenKeys.clear();
+    uniqueFollows.length = 0;
+    pubkeysToDelete.clear();
+  }
 }
 
 /**
